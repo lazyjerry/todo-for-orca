@@ -2,6 +2,14 @@
 
 在 Orca 右側欄管理 todo，到時發送桌面通知，底部狀態列顯示「進行中」與「下一個」todo。
 
+> **English** — Manage todos in Orca's right sidebar, get a desktop notification when each one is due, and see the todo in progress and the next one in the status bar. Todos can repeat every N minutes / hours / days / weeks / months, stop after a number of times or at an end time, and carry a duration. The interface follows Orca's language: Traditional Chinese when Orca is set to Chinese, English otherwise.
+
+## 安裝（社群外掛目錄）
+
+[Open in Orca](https://onorca.dev/plugins/lazyjerry.todo-list?catalog=community)
+
+或在 Orca 的 Settings → Plugins 搜尋 `todo-list`。外掛列在 Orca 社群目錄（[orca-community-plugins](https://github.com/stablyai/orca-community-plugins)），是自動檢查、沒有人工審查的目錄；第一次安裝時 Orca 會先問要不要加入社群目錄，再列出外掛要求的權限（見「權限」）請你同意。
+
 ## 功能
 
 - **清單**：上方分頁依狀態過濾「啟用／停用／已完成」（標籤帶筆數），預設「啟用」；切換狀態不會記住，重開面板回到啟用。各狀態外框顏色不同（accent／warning／success）。啟用依「進行中 → 下一次時間」排序。
@@ -20,6 +28,7 @@
 - 每月重複遇到小月時落在月底（1/31 → 2/28 → 3/31）。
 - 只有「啟用」的 todo 會通知、算正在進行、出現在狀態列。
 - 沒填開始時間的 todo 只是清單項目，不通知。
+- **語言**：介面跟著 Orca 的語言，zh 開頭（含簡體）用繁體中文，其他一律英文。通知與狀態列由 worker 產生，worker 拿不到 Orca 的語言，所以用面板最後一次開啟時的語言（存在 storage key `lang`）；面板還沒開過時用系統語系。指令名稱與狀態列 tooltip 寫在 manifest，Orca 不支援翻譯，固定英文。
 
 ## 與需求的差異
 
@@ -33,7 +42,7 @@
 
 | 能力 | 用途 |
 |---|---|
-| `storage:own` | 存放 todos（外掛自己的 storage，key `todos`） |
+| `storage:own` | 存放 todos 與介面語言（外掛自己的 storage，key `todos`、`lang`） |
 | `notifications:show` | 桌面通知 |
 
 `trusted-worker`：worker 定時（每 15 秒）檢查場次並更新狀態列。manifest 宣告了 `statusBarItems`，Orca 會在外掛啟用期間持續執行 worker。
@@ -51,7 +60,7 @@ orca plugin dev watch todo-list    # 載入 Orca 開發；第一次會要求 --a
 
 ```
 src/
-├── core/          # panel 與 worker 共用：資料模型、場次計算（schedule）、草稿驗證（draft）、顯示格式（format）
+├── core/          # panel 與 worker 共用：資料模型、場次計算（schedule）、草稿驗證（draft）、顯示格式（format）、介面文字（i18n）
 ├── worker/        # storage 讀寫（store）、通知與狀態列的計算（engine）
 ├── worker.ts      # worker 進入點：請求處理、定時檢查
 ├── panel.tsx      # 右側欄面板
