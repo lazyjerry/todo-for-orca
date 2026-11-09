@@ -26,11 +26,11 @@
       }
     ],
     "commands": [
-      { "id": "todo-list.showStatus", "title": "Todo List: 顯示進行中與下一個 Todo" }
+      { "id": "todo-list.showStatus", "title": "Todo List: Show Current and Next Todo" }
     ],
     "statusBarItems": [
-      { "id": "now", "icon": "play", "tone": "warning", "tooltip": "正在進行的 Todo", "command": "todo-list.showStatus" },
-      { "id": "next", "icon": "bell", "tone": "accent", "tooltip": "下一個 Todo", "command": "todo-list.showStatus" }
+      { "id": "now", "icon": "play", "tone": "warning", "tooltip": "Todo in progress", "command": "todo-list.showStatus" },
+      { "id": "next", "icon": "bell", "tone": "accent", "tooltip": "Next todo", "command": "todo-list.showStatus" }
     ]
   },
   "capabilities": [

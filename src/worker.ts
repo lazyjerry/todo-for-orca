@@ -3,10 +3,11 @@
 import { randomUUID } from 'node:crypto';
 import type { OrcaWorkerApi } from 'orca/worker';
 import { parseDraft } from './core/draft.ts';
+import { type Lang, messages } from './core/i18n.ts';
 import type { Todo } from './core/types.ts';
 import type { ActionResult, Flash, ViewState } from './protocol.ts';
 import { type BarItem, dueReminders, scheduleSignature, statusBar, summaryText } from './worker/engine.ts';
-import { loadTodos, saveTodos } from './worker/store.ts';
+import { loadLang, loadTodos, saveLang, saveTodos } from './worker/store.ts';
 
 const TICK_MS = 15_000;
 
@@ -25,6 +26,9 @@ export default function activate(orca: OrcaWorkerApi): void {
 
   const barCache: Record<string, string> = {};
   let lastSignature = '';
+  /** 啟動時從 storage 讀回（見 loadLang），面板開啟時以 lang.set 更新 */
+  let lang: Lang = 'en';
+  const msg = () => messages(lang);
 
   async function updateBar(id: 'now' | 'next', item: BarItem): Promise<void> {
     const key = JSON.stringify(item);
@@ -41,7 +45,7 @@ export default function activate(orca: OrcaWorkerApi): void {
 
   /** 狀態列與面板跟著最新資料走；force＝資料剛改過，不管場次有沒有變都通知面板。 */
   async function publish(todos: Todo[], now: number, force: boolean): Promise<void> {
-    const bar = statusBar(todos, now);
+    const bar = statusBar(todos, now, lang);
     await updateBar('now', bar.now);
     await updateBar('next', bar.next);
     const signature = scheduleSignature(todos, now);
@@ -54,7 +58,7 @@ export default function activate(orca: OrcaWorkerApi): void {
   async function tick(): Promise<void> {
     const now = Date.now();
     const todos = await loadTodos(orca);
-    const due = dueReminders(todos, now);
+    const due = dueReminders(todos, now, lang);
     if (due.length > 0) {
       const ids = new Set(due.map((r) => r.id));
       // 先記下已處理，再送通知：送失敗也不要每 15 秒重送一次
@@ -100,7 +104,7 @@ export default function activate(orca: OrcaWorkerApi): void {
   function find(todos: Todo[], id: string): Todo {
     const todo = todos.find((t) => t.id === id);
     if (!todo) {
-      throw new UserError('找不到這筆 todo，可能已被刪除');
+      throw new UserError(msg().errNotFound);
     }
     return todo;
   }
@@ -108,7 +112,7 @@ export default function activate(orca: OrcaWorkerApi): void {
   orca.panels.handle('state.get', () => serial(async () => ({ todos: await loadTodos(orca) })));
 
   orca.panels.handle('todo.save', async (draft): Promise<ActionResult & { savedId?: string }> => {
-    const parsed = parseDraft(draft);
+    const parsed = parseDraft(draft, lang);
     if (!parsed.ok) {
       const todos = await serial(() => loadTodos(orca));
       return { state: { todos }, flash: { tone: 'danger', text: parsed.error } };
@@ -120,11 +124,11 @@ export default function activate(orca: OrcaWorkerApi): void {
         const existing = find(todos, draft.id);
         savedId = existing.id;
         const next: Todo = { ...existing, ...parsed.fields, notifiedThrough: now, updatedAt: now };
-        return { todos: todos.map((t) => (t.id === existing.id ? next : t)), flash: { tone: 'success', text: `已儲存「${next.title}」` } };
+        return { todos: todos.map((t) => (t.id === existing.id ? next : t)), flash: { tone: 'success', text: msg().flashSaved(next.title) } };
       }
       const created: Todo = { id: randomUUID(), ...parsed.fields, notifiedThrough: now, createdAt: now, updatedAt: now };
       savedId = created.id;
-      return { todos: [...todos, created], flash: { tone: 'success', text: `已新增「${created.title}」` } };
+      return { todos: [...todos, created], flash: { tone: 'success', text: msg().flashCreated(created.title) } };
     })(null);
     return result.flash?.tone === 'danger' ? result : { ...result, savedId };
   });
@@ -135,8 +139,7 @@ export default function activate(orca: OrcaWorkerApi): void {
       const todo = find(todos, id);
       // 重新啟用時，停用期間錯過的場次不補發
       const next: Todo = { ...todo, status, updatedAt: now, ...(status === 'enabled' ? { notifiedThrough: now } : {}) };
-      const label = { enabled: '已啟用', disabled: '已停用', done: '已標記完成' }[status];
-      return { todos: todos.map((t) => (t.id === id ? next : t)), flash: { tone: 'success', text: `${label}「${todo.title}」` } };
+      return { todos: todos.map((t) => (t.id === id ? next : t)), flash: { tone: 'success', text: msg().flashStatus[status](todo.title) } };
     }),
   );
 
@@ -144,7 +147,7 @@ export default function activate(orca: OrcaWorkerApi): void {
     'todo.delete',
     mutation<{ id: string }>((todos, { id }) => {
       const todo = find(todos, id);
-      return { todos: todos.filter((t) => t.id !== id), flash: { tone: 'success', text: `已刪除「${todo.title}」` } };
+      return { todos: todos.filter((t) => t.id !== id), flash: { tone: 'success', text: msg().flashDeleted(todo.title) } };
     }),
   );
 
@@ -154,11 +157,11 @@ export default function activate(orca: OrcaWorkerApi): void {
       // 只收這兩種狀態，就算 panel 送了 enabled 也不刪
       const targets = new Set(statuses.filter((s) => s === 'done' || s === 'disabled'));
       if (targets.size === 0) {
-        throw new UserError('請至少勾選一種要刪除的狀態');
+        throw new UserError(msg().errPurgeNone);
       }
       const kept = todos.filter((t) => !targets.has(t.status as 'done' | 'disabled'));
       const removed = todos.length - kept.length;
-      return { todos: kept, flash: { tone: removed > 0 ? 'success' : 'neutral', text: removed > 0 ? `已刪除 ${removed} 筆` : '沒有符合的項目' } };
+      return { todos: kept, flash: { tone: removed > 0 ? 'success' : 'neutral', text: removed > 0 ? msg().flashPurged(removed) : msg().flashNothingMatched } };
     }),
   );
 
@@ -166,22 +169,39 @@ export default function activate(orca: OrcaWorkerApi): void {
     const todos = await serial(() => loadTodos(orca));
     const todo = todos.find((t) => t.id === id);
     if (!todo) {
-      return { flash: { tone: 'danger', text: '找不到這筆 todo，可能已被刪除' } };
+      return { flash: { tone: 'danger', text: msg().errNotFound } };
     }
     try {
-      const { delivered } = await orca.host.call('notifications.show', { title: todo.title, body: '（測試通知）' });
+      const { delivered } = await orca.host.call('notifications.show', { title: todo.title, body: msg().testBody });
       return {
         flash: delivered
-          ? { tone: 'success', text: '已送出測試通知' }
-          : { tone: 'warning', text: 'Orca 回報通知沒有送達，請到系統設定確認 Orca 的通知權限' },
+          ? { tone: 'success', text: msg().testSent }
+          : { tone: 'warning', text: msg().testUndelivered },
       };
     } catch (err) {
-      return { flash: { tone: 'danger', text: `通知失敗：${errorText(err)}` } };
+      return { flash: { tone: 'danger', text: msg().testFailed(errorText(err)) } };
     }
   });
 
-  orca.commands.register('todo-list.showStatus', async () => summaryText(await serial(() => loadTodos(orca)), Date.now()));
+  orca.commands.register('todo-list.showStatus', async () => summaryText(await serial(() => loadTodos(orca)), Date.now(), lang));
 
+  orca.panels.handle('lang.set', (input) =>
+    serial(async () => {
+      const next: Lang = input.lang === 'zh' ? 'zh' : 'en';
+      if (next !== lang) {
+        lang = next;
+        await saveLang(orca, next);
+        // 狀態列文字跟著換語言；面板自己會重畫，不必通知
+        await publish(await loadTodos(orca), Date.now(), false);
+      }
+      return { lang };
+    }),
+  );
+
+  // 排在第一次定時檢查之前：通知與狀態列一開始就用對的語言
+  void serial(async () => {
+    lang = await loadLang(orca);
+  }).catch((err) => orca.log(`loadLang failed: ${errorText(err)}`));
   runTick();
   clearInterval(timer);
   timer = setInterval(runTick, TICK_MS);

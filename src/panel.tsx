@@ -8,6 +8,7 @@ import {
   Callout,
   Checkbox,
   EmptyState,
+  env,
   Heading,
   IconButton,
   Input,
@@ -36,7 +37,8 @@ import {
   type Tone,
 } from 'orca';
 import { BODY_MAX, draftFromTodo, emptyDraft, TITLE_MAX } from './core/draft.ts';
-import { describeRepeat, formatClock, formatDateTime, formatDuration, formatShort, STATUS_LABELS, UNIT_LABELS } from './core/format.ts';
+import { describeRepeat, formatClock, formatDateTime, formatDuration, formatShort } from './core/format.ts';
+import { type Lang, type Messages, messages, pickLang } from './core/i18n.ts';
 import { highlights, nextAfter, ongoingAt } from './core/schedule.ts';
 import type { RepeatUnit, Todo, TodoDraft, TodoStatus } from './core/types.ts';
 import type { ActionResult, Flash, PurgeStatus, ViewState } from './protocol.ts';
@@ -58,6 +60,15 @@ const STATUS_ORDER: TodoStatus[] = ['enabled', 'disabled', 'done'];
 /** 狀態的代表色：清單外框、徽章共用，讓三組一眼分得開。 */
 const STATUS_TONE: Record<TodoStatus, Tone> = { enabled: 'accent', disabled: 'warning', done: 'success' };
 const FLASH_TIMEOUT_MS = 4000;
+
+/** Orca 的介面語言：zh 開頭用繁中，其他用英文。在 render 時讀，語言切換後重畫就會跟著換。 */
+function panelLang(): Lang {
+  return pickLang(env.locale);
+}
+
+function msgs(): Messages {
+  return messages(panelLang());
+}
 
 /** 成功／一般訊息幾秒後自動消失，警告與錯誤留著等使用者關閉。 */
 function showFlash(next: Flash | null): void {
@@ -84,7 +95,7 @@ async function refresh(): Promise<void> {
   try {
     applyState(await plugin.request('state.get'));
   } catch (err) {
-    showFlash({ tone: 'danger', text: `讀取清單失敗：${errorText(err)}` });
+    showFlash({ tone: 'danger', text: msgs().loadFailed(errorText(err)) });
   }
 }
 
@@ -106,6 +117,8 @@ async function act(run: () => Promise<ActionResult>): Promise<boolean> {
 
 export function setup(ctx: PanelContext): void {
   ctx.subscriptions.push(plugin.on('state.changed', (state) => applyState(state)));
+  // worker 拿不到 Orca 的語言，由面板告訴它；失敗只影響通知與狀態列的語言，不擋清單
+  void plugin.request('lang.set', { lang: panelLang() }).catch(() => undefined);
   void refresh();
 }
 
@@ -201,7 +214,7 @@ function FlashBar() {
       <Callout tone={message.tone}>
         <Row justify="between" align="center">
           <Text size="sm">{message.text}</Text>
-          <IconButton icon="close" label="關閉訊息" size="xs" variant="ghost" onPress={() => set(flash, null)} />
+          <IconButton icon="close" label={msgs().closeMessage} size="xs" variant="ghost" onPress={() => set(flash, null)} />
         </Row>
       </Callout>
     </Box>
@@ -210,14 +223,15 @@ function FlashBar() {
 
 /** 整頁 popup 的骨架：上方標題列與返回鈕、中間捲動內容、下方固定動作列與訊息。 */
 function PopupFrame({ title, footer, children }: { title: string; footer?: OrcaNode; children?: OrcaNode }) {
+  const m = msgs();
   return (
     <Box height="100%" gap="md">
       <Box shrink={false} gap="sm">
         <Box paddingY="xs">
           <Row align="center" gap="sm">
             {/* 圖示集合沒有返回箭頭，用文字箭頭 */}
-            <Button size="xs" variant="ghost" tooltip="回到清單" onPress={closePopup}>
-              ← 返回
+            <Button size="xs" variant="ghost" tooltip={m.backTooltip} onPress={closePopup}>
+              {m.back}
             </Button>
             <Text size="sm" weight="semibold">
               {title}
@@ -241,16 +255,17 @@ function PopupFrame({ title, footer, children }: { title: string; footer?: OrcaN
 }
 
 function ConfirmDelete({ title, onConfirm }: { title: string; onConfirm: () => unknown }) {
+  const m = msgs();
   return (
-    <Callout tone="danger" title={`確定刪除「${title}」？`}>
+    <Callout tone="danger" title={m.confirmDeleteTitle(title)}>
       <Stack gap="sm">
-        <Text size="sm">刪除後無法復原。</Text>
+        <Text size="sm">{m.cannotUndo}</Text>
         <Actions>
           <Button size="xs" variant="outline" icon="close" onPress={() => set(confirmDelete, false)}>
-            取消
+            {m.cancel}
           </Button>
           <Button size="xs" variant="solid" tone="danger" icon="delete" disabled={read(busy)} onPress={onConfirm}>
-            確定刪除
+            {m.confirmDelete}
           </Button>
         </Actions>
       </Stack>
@@ -265,11 +280,13 @@ function OngoingCard({ items }: { items: ReturnType<typeof highlights>['ongoing'
   if (items.length === 0) {
     return null;
   }
+  const lang = panelLang();
+  const m = messages(lang);
   return (
     <Box border="warning" background="warning" radius="lg" padding="md" gap="sm">
       <Row justify="between" align="center">
-        <Heading level={2}>正在進行</Heading>
-        <Badge tone="warning">{`${items.length} 項`}</Badge>
+        <Heading level={2}>{m.ongoing}</Heading>
+        <Badge tone="warning">{m.itemCount(items.length)}</Badge>
       </Row>
       {items.map((o) => (
         <Box border="warning" background="card" radius="md" padding="sm" gap="xs">
@@ -277,12 +294,12 @@ function OngoingCard({ items }: { items: ReturnType<typeof highlights>['ongoing'
             {o.todo.title}
           </Text>
           <Row gap="xs" align="center" wrap>
-            <Badge tone="warning">{`持續 ${formatDuration(o.todo.durationMin)}`}</Badge>
+            <Badge tone="warning">{m.lasts(formatDuration(o.todo.durationMin, lang))}</Badge>
             <Text size="sm">{`${formatClock(o.start)} – ${formatClock(o.end)}`}</Text>
           </Row>
           <Actions>
             <Button size="xs" variant="outline" icon="file-text" onPress={() => openPopup({ kind: 'detail', id: o.todo.id })}>
-              查看
+              {m.view}
             </Button>
           </Actions>
         </Box>
@@ -295,11 +312,13 @@ function NextCard({ next, now }: { next: ReturnType<typeof highlights>['next']; 
   if (!next) {
     return null;
   }
-  const meta = [formatShort(next.at, now), next.todo.durationMin > 0 ? `持續 ${formatDuration(next.todo.durationMin)}` : ''];
+  const lang = panelLang();
+  const m = messages(lang);
+  const meta = [formatShort(next.at, now, lang), next.todo.durationMin > 0 ? m.lasts(formatDuration(next.todo.durationMin, lang)) : ''];
   return (
     <Box border="accent" radius="lg" padding="md" gap="xs">
       <Text size="xs" muted weight="medium">
-        下一個
+        {m.next}
       </Text>
       <Row justify="between" align="center" gap="sm">
         <Box grow minWidth={0} gap="xs">
@@ -309,7 +328,7 @@ function NextCard({ next, now }: { next: ReturnType<typeof highlights>['next']; 
           <Text size="sm">{meta.filter(Boolean).join(' · ')}</Text>
         </Box>
         <Button size="xs" variant="outline" icon="file-text" onPress={() => openPopup({ kind: 'detail', id: next.todo.id })}>
-          查看
+          {m.view}
         </Button>
       </Row>
     </Box>
@@ -317,24 +336,26 @@ function NextCard({ next, now }: { next: ReturnType<typeof highlights>['next']; 
 }
 
 function itemLine(todo: Todo, now: number): { icon: IconName; description: string } {
+  const lang = panelLang();
+  const m = messages(lang);
   const live = todo.status === 'enabled' ? ongoingAt(todo, now) : null;
   if (live) {
-    return { icon: 'play', description: `進行中 · 至 ${formatClock(live.end)}` };
+    return { icon: 'play', description: m.lineOngoing(formatClock(live.end)) };
   }
   if (todo.status === 'done') {
-    return { icon: 'check', description: `完成於 ${formatShort(todo.updatedAt, now)}` };
+    return { icon: 'check', description: m.lineDone(formatShort(todo.updatedAt, now, lang)) };
   }
   if (todo.startAt === null) {
-    return { icon: todo.status === 'disabled' ? 'pause' : 'file-text', description: '未排程' };
+    return { icon: todo.status === 'disabled' ? 'pause' : 'file-text', description: m.unscheduled };
   }
   const parts: string[] = [];
   const at = nextAfter(todo, now);
-  parts.push(at === null ? '已無後續場次' : `下一次 ${formatShort(at, now)}`);
+  parts.push(at === null ? m.noMoreRuns : m.nextRun(formatShort(at, now, lang)));
   if (todo.repeat) {
-    parts.push(describeRepeat(todo.repeat));
+    parts.push(describeRepeat(todo.repeat, lang));
   }
   if (todo.durationMin > 0) {
-    parts.push(`持續 ${formatDuration(todo.durationMin)}`);
+    parts.push(m.lasts(formatDuration(todo.durationMin, lang)));
   }
   const icon: IconName = todo.status === 'disabled' ? 'pause' : todo.notify ? 'bell' : 'calendar';
   return { icon, description: parts.join(' · ') };
@@ -350,11 +371,12 @@ function sortGroup(todos: Todo[], status: TodoStatus, now: number): Todo[] {
 }
 
 function Group({ status, todos, now }: { status: TodoStatus; todos: Todo[]; now: number }) {
-  const label = STATUS_LABELS[status];
+  const m = msgs();
+  const label = m.status[status];
   if (todos.length === 0) {
     return (
       <Text size="sm" muted>
-        {`沒有${label}的 todo`}
+        {m.emptyGroup(label)}
       </Text>
     );
   }
@@ -383,35 +405,36 @@ function MainView({ state }: { state: ViewState }) {
   const { ongoing, next } = highlights(state.todos, now);
   const disabled = read(busy);
   const purgeable = state.todos.filter((t) => t.status !== 'enabled').length;
+  const m = msgs();
   return (
     <Box height="100%" gap="sm">
       <Row justify="end" gap="xs">
-        <IconButton icon="add" label="新增 Todo" size="xs" variant="solid" tone="accent" disabled={disabled} onPress={() => openEditor()} />
+        <IconButton icon="add" label={m.addTodo} size="xs" variant="solid" tone="accent" disabled={disabled} onPress={() => openEditor()} />
         <IconButton
           icon="delete"
-          label="批次刪除"
-          tooltip="批次刪除已完成或停用的 todo"
+          label={m.purge}
+          tooltip={m.purgeTooltip}
           size="xs"
           variant="outline"
           tone="danger"
           disabled={disabled || purgeable === 0}
           onPress={() => openPopup({ kind: 'purge' })}
         />
-        <IconButton icon="refresh" label="重新整理" size="xs" disabled={disabled} onPress={refresh} />
+        <IconButton icon="refresh" label={m.refresh} size="xs" disabled={disabled} onPress={refresh} />
       </Row>
       <Box grow minHeight={0} scroll="y">
         <Stack gap="md">
           <OngoingCard items={ongoing} />
           <NextCard next={next} now={now} />
           {state.todos.length === 0 ? (
-            <EmptyState icon="check" title="還沒有 todo" description="按右上角的「＋」建立第一筆；設定開始時間後，到時會發送桌面通知。" />
+            <EmptyState icon="check" title={m.emptyTitle} description={m.emptyDescription} />
           ) : null}
           {state.todos.length > 0 ? (
-            <Tabs label="依狀態過濾" value={read(statusFilter)} onChange={(v) => set(statusFilter, v as TodoStatus)}>
+            <Tabs label={m.filterLabel} value={read(statusFilter)} onChange={(v) => set(statusFilter, v as TodoStatus)}>
               {STATUS_ORDER.map((status) => {
                 const todos = state.todos.filter((t) => t.status === status);
                 return (
-                  <Tab value={status} label={`${STATUS_LABELS[status]} ${todos.length}`}>
+                  <Tab value={status} label={m.tabLabel(m.status[status], todos.length)}>
                     <Group status={status} todos={todos} now={now} />
                   </Tab>
                 );
@@ -432,34 +455,36 @@ function DetailView({ todo }: { todo: Todo }) {
   const disabled = read(busy);
   const live = todo.status === 'enabled' ? ongoingAt(todo, now) : null;
   const at = nextAfter(todo, now);
+  const lang = panelLang();
+  const m = messages(lang);
   const footer = (
     <Stack gap="sm">
       <Row justify="end" align="center" gap="sm" wrap>
         <Button size="xs" variant="outline" tone="danger" icon="delete" disabled={disabled} onPress={() => set(confirmDelete, true)}>
-          刪除
+          {m.delete}
         </Button>
         <Row align="center" gap="xs">
           {todo.status !== 'done' ? (
             <TintButton tone="success" icon="check" disabled={disabled} onPress={() => setStatus(todo.id, 'done')}>
-              完成
+              {m.markDone}
             </TintButton>
           ) : null}
           {todo.status === 'enabled' ? (
             <TintButton tone="warning" icon="pause" disabled={disabled} onPress={() => setStatus(todo.id, 'disabled')}>
-              停用
+              {m.disable}
             </TintButton>
           ) : (
             <TintButton tone="success" icon="play" disabled={disabled} onPress={() => setStatus(todo.id, 'enabled')}>
-              啟用
+              {m.enable}
             </TintButton>
           )}
         </Row>
         <Row align="center" gap="xs">
           <Button size="xs" variant="outline" icon="bell" disabled={disabled} onPress={() => testNotify(todo.id)}>
-            測試通知
+            {m.testNotify}
           </Button>
           <Button size="xs" variant="solid" tone="accent" icon="edit" disabled={disabled} onPress={() => openEditor(todo)}>
-            編輯
+            {m.edit}
           </Button>
         </Row>
       </Row>
@@ -467,31 +492,31 @@ function DetailView({ todo }: { todo: Todo }) {
     </Stack>
   );
   return (
-    <PopupFrame title="Todo 內容" footer={footer}>
+    <PopupFrame title={m.detailTitle} footer={footer}>
       <Heading level={1}>{todo.title}</Heading>
       <Row gap="xs" wrap>
-        <Badge tone={STATUS_TONE[todo.status]}>{STATUS_LABELS[todo.status]}</Badge>
-        {live ? <Badge tone="warning">進行中</Badge> : null}
-        {todo.notify && todo.startAt !== null ? <Badge tone="accent">通知開啟</Badge> : null}
+        <Badge tone={STATUS_TONE[todo.status]}>{m.status[todo.status]}</Badge>
+        {live ? <Badge tone="warning">{m.badgeOngoing}</Badge> : null}
+        {todo.notify && todo.startAt !== null ? <Badge tone="accent">{m.badgeNotify}</Badge> : null}
       </Row>
       {live ? (
-        <Callout tone="warning" icon="play" title={`正在進行：持續 ${formatDuration(todo.durationMin)}`}>
+        <Callout tone="warning" icon="play" title={m.ongoingCallout(formatDuration(todo.durationMin, lang))}>
           <Text size="sm">{`${formatClock(live.start)} – ${formatClock(live.end)}`}</Text>
         </Callout>
       ) : null}
-      <Section title="時間條件">
+      <Section title={m.timeSection}>
         <KeyValue
           items={[
-            { label: '開始時間', value: todo.startAt === null ? '未排程' : formatDateTime(todo.startAt) },
-            { label: '持續時間', value: todo.durationMin > 0 ? formatDuration(todo.durationMin) : '—' },
-            { label: '重複', value: describeRepeat(todo.repeat) },
-            { label: '下一次', value: at === null ? '—' : formatDateTime(at) },
-            { label: '桌面通知', value: todo.startAt === null ? '—（未排程）' : todo.notify ? '開啟' : '關閉' },
+            { label: m.startLabel, value: todo.startAt === null ? m.unscheduled : formatDateTime(todo.startAt) },
+            { label: m.durationLabel, value: todo.durationMin > 0 ? formatDuration(todo.durationMin, lang) : '—' },
+            { label: m.repeatLabel, value: describeRepeat(todo.repeat, lang) },
+            { label: m.nextLabel, value: at === null ? '—' : formatDateTime(at) },
+            { label: m.notifyLabel, value: todo.startAt === null ? m.notifyUnscheduled : todo.notify ? m.on : m.off },
           ]}
         />
       </Section>
-      <Section title="要做的事情">
-        {todo.body.trim() ? <Markdown content={todo.body} /> : <Text size="sm" muted>（沒有內容）</Text>}
+      <Section title={m.bodySection}>
+        {todo.body.trim() ? <Markdown content={todo.body} /> : <Text size="sm" muted>{m.noBody}</Text>}
       </Section>
     </PopupFrame>
   );
@@ -499,10 +524,11 @@ function DetailView({ todo }: { todo: Todo }) {
 
 // ── popup：新增／編輯 ─────────────────────────────────────
 
-const REPEAT_OPTIONS: { value: RepeatUnit | 'none'; label: string }[] = [
-  { value: 'none', label: '不重複' },
-  ...(Object.keys(UNIT_LABELS) as RepeatUnit[]).map((unit) => ({ value: unit, label: `每 N ${UNIT_LABELS[unit]}` })),
-];
+const REPEAT_UNITS: RepeatUnit[] = ['minute', 'hour', 'day', 'week', 'month'];
+
+function repeatOptions(m: Messages): { value: RepeatUnit | 'none'; label: string }[] {
+  return [{ value: 'none', label: m.repeatNone }, ...REPEAT_UNITS.map((unit) => ({ value: unit, label: m.repeatOption(unit) }))];
+}
 
 /** 帶入的時間取下一個整分鐘：存檔當下以前的場次不會通知，取整後馬上存仍趕得上。 */
 function nextMinute(): string {
@@ -514,99 +540,100 @@ function EditView({ state }: { state: ViewState }) {
   const disabled = read(busy);
   const existing = d.id ? state.todos.find((t) => t.id === d.id) : undefined;
   const hasStart = d.start.trim().length > 0;
+  const m = msgs();
   const footer = (
     <Stack gap="xs">
       <Actions>
         {existing ? (
           <Button size="xs" variant="outline" tone="danger" icon="delete" disabled={disabled} onPress={() => set(confirmDelete, true)}>
-            刪除
+            {m.delete}
           </Button>
         ) : null}
         <Button size="xs" variant="outline" icon="close" onPress={() => (existing ? openPopup({ kind: 'detail', id: existing.id }) : closePopup())}>
-          取消
+          {m.cancel}
         </Button>
         <Button size="xs" variant="solid" tone="accent" icon="check" disabled={disabled} onPress={saveDraft}>
-          儲存
+          {m.save}
         </Button>
       </Actions>
       {existing && read(confirmDelete) ? <ConfirmDelete title={existing.title} onConfirm={() => removeTodo(existing.id)} /> : null}
     </Stack>
   );
   return (
-    <PopupFrame title={existing ? '編輯 Todo' : '新增 Todo'} footer={footer}>
-      <Section title="基本資料">
-        <Input label="標題" value={d.title} maxLength={TITLE_MAX} placeholder="單行標題" onChange={(v) => patchDraft({ title: v })} />
-        <Tabs label="要做的事情" value={read(bodyTab)} onChange={(v) => set(bodyTab, v)}>
-          <Tab value="write" label="撰寫" icon="edit">
+    <PopupFrame title={existing ? m.editTitle : m.newTitle} footer={footer}>
+      <Section title={m.basicSection}>
+        <Input label={m.titleLabel} value={d.title} maxLength={TITLE_MAX} placeholder={m.titlePlaceholder} onChange={(v) => patchDraft({ title: v })} />
+        <Tabs label={m.bodySection} value={read(bodyTab)} onChange={(v) => set(bodyTab, v)}>
+          <Tab value="write" label={m.bodyWrite} icon="edit">
             <Textarea
-              label="要做的事情（Markdown）"
+              label={m.bodyLabel}
               value={d.body}
               rows={10}
               maxLength={BODY_MAX}
-              placeholder={'- [ ] 第一步\n- [ ] 第二步'}
+              placeholder={m.bodyPlaceholder}
               onChange={(v) => patchDraft({ body: v })}
             />
           </Tab>
-          <Tab value="preview" label="預覽" icon="file-text">
-            {d.body.trim() ? <Markdown content={d.body} /> : <Text size="sm" muted>（沒有內容）</Text>}
+          <Tab value="preview" label={m.bodyPreview} icon="file-text">
+            {d.body.trim() ? <Markdown content={d.body} /> : <Text size="sm" muted>{m.noBody}</Text>}
           </Tab>
         </Tabs>
       </Section>
 
-      <Section title="時間條件">
-        <Input label="開始時間" value={d.start} placeholder="2026-11-10 14:00（留空＝不排程）" onChange={(v) => patchDraft({ start: v })} />
+      <Section title={m.timeSection}>
+        <Input label={m.startLabel} value={d.start} placeholder={m.startPlaceholder} onChange={(v) => patchDraft({ start: v })} />
         <Actions>
           <Button size="xs" variant="outline" icon="calendar" onPress={() => patchDraft({ start: nextMinute() })}>
-            帶入現在時間
+            {m.fillNow}
           </Button>
         </Actions>
-        <Input label="持續時間（分鐘）" value={d.duration} placeholder="0 或留空＝不標記" onChange={(v) => patchDraft({ duration: v })} />
+        <Input label={m.durationInputLabel} value={d.duration} placeholder={m.durationPlaceholder} onChange={(v) => patchDraft({ duration: v })} />
         <Text size="xs" muted>
-          持續時間目前只用來標記：場次開始後的這段時間，會顯示在側欄最上方與狀態列的「進行中」。
+          {m.durationHint}
         </Text>
         <Select
-          label="重複"
+          label={m.repeatLabel}
           value={d.repeatUnit}
-          options={REPEAT_OPTIONS}
+          options={repeatOptions(m)}
           onChange={(v) => patchDraft({ repeatUnit: v as RepeatUnit | 'none' })}
         />
         {d.repeatUnit !== 'none' ? (
           <Stack gap="sm">
-            <Input label={`每隔幾${UNIT_LABELS[d.repeatUnit]}`} value={d.every} placeholder="1" onChange={(v) => patchDraft({ every: v })} />
+            <Input label={m.everyLabel(d.repeatUnit)} value={d.every} placeholder="1" onChange={(v) => patchDraft({ every: v })} />
             <RadioGroup
-              label="停止條件"
+              label={m.endLabel}
               orientation="horizontal"
               value={d.endKind}
               options={[
-                { value: 'never', label: '不停止' },
-                { value: 'count', label: '重複次數' },
-                { value: 'until', label: '截止時間' },
+                { value: 'never', label: m.endNever },
+                { value: 'count', label: m.endCount },
+                { value: 'until', label: m.endUntil },
               ]}
               onChange={(v) => patchDraft({ endKind: v as TodoDraft['endKind'] })}
             />
             {d.endKind === 'count' ? (
-              <Input label="總次數（含第一次）" value={d.count} placeholder="例如 5" onChange={(v) => patchDraft({ count: v })} />
+              <Input label={m.countLabel} value={d.count} placeholder={m.countPlaceholder} onChange={(v) => patchDraft({ count: v })} />
             ) : null}
             {d.endKind === 'until' ? (
-              <Input label="截止時間" value={d.until} placeholder="2026-12-31 23:59" onChange={(v) => patchDraft({ until: v })} />
+              <Input label={m.untilLabel} value={d.until} placeholder="2026-12-31 23:59" onChange={(v) => patchDraft({ until: v })} />
             ) : null}
           </Stack>
         ) : null}
-        <Switch label="到時發送桌面通知" checked={d.notify} disabled={!hasStart} onChange={(v) => patchDraft({ notify: v })} />
+        <Switch label={m.notifySwitch} checked={d.notify} disabled={!hasStart} onChange={(v) => patchDraft({ notify: v })} />
         {hasStart ? null : (
           <Text size="xs" muted>
-            填了開始時間才會通知。
+            {m.notifyNeedsStart}
           </Text>
         )}
       </Section>
 
-      <Section title="狀態">
+      <Section title={m.statusSection}>
         <RadioGroup
-          label="狀態"
+          label={m.statusSection}
           labelHidden
           orientation="horizontal"
           value={d.status}
-          options={STATUS_ORDER.map((s) => ({ value: s, label: STATUS_LABELS[s] }))}
+          options={STATUS_ORDER.map((s) => ({ value: s, label: m.status[s] }))}
           onChange={(v) => patchDraft({ status: v as TodoStatus })}
         />
       </Section>
@@ -621,6 +648,7 @@ function PurgeView({ state }: { state: ViewState }) {
   const targets = state.todos.filter((t) => t.status !== 'enabled' && choice[t.status]);
   const count = (s: PurgeStatus) => state.todos.filter((t) => t.status === s).length;
   const statuses = (Object.keys(choice) as PurgeStatus[]).filter((s) => choice[s]);
+  const m = msgs();
   const confirm = async () => {
     if (await act(() => plugin.request('todo.purge', { statuses }))) {
       closePopup();
@@ -629,41 +657,41 @@ function PurgeView({ state }: { state: ViewState }) {
   const footer = (
     <Actions>
       <Button size="xs" variant="outline" icon="close" onPress={closePopup}>
-        取消
+        {m.cancel}
       </Button>
       <Button size="xs" variant="solid" tone="danger" icon="delete" disabled={read(busy) || targets.length === 0} onPress={confirm}>
-        {`確定刪除 ${targets.length} 筆`}
+        {m.purgeConfirm(targets.length)}
       </Button>
     </Actions>
   );
   return (
-    <PopupFrame title="批次刪除" footer={footer}>
-      <Section title="要刪除哪些狀態" tone="danger">
+    <PopupFrame title={m.purge} footer={footer}>
+      <Section title={m.purgeSection} tone="danger">
         <Checkbox
-          label={`已完成（${count('done')} 筆）`}
+          label={m.purgeOption(m.status.done, count('done'))}
           checked={choice.done}
           onChange={(v) => update(purgeChoice, (c) => ({ ...c, done: v }))}
         />
         <Checkbox
-          label={`停用（${count('disabled')} 筆）`}
+          label={m.purgeOption(m.status.disabled, count('disabled'))}
           checked={choice.disabled}
           onChange={(v) => update(purgeChoice, (c) => ({ ...c, disabled: v }))}
         />
         <Text size="xs" muted>
-          啟用中的 todo 不會被刪除。
+          {m.purgeKeepsEnabled}
         </Text>
       </Section>
       {targets.length > 0 ? (
-        <Callout tone="danger" title={`將刪除以下 ${targets.length} 筆，刪除後無法復原`}>
+        <Callout tone="danger" title={m.purgeListTitle(targets.length)}>
           <Stack gap="xs">
             {targets.map((t) => (
-              <Text size="sm">{`・${t.title}（${STATUS_LABELS[t.status]}）`}</Text>
+              <Text size="sm">{m.purgeListItem(t.title, m.status[t.status])}</Text>
             ))}
           </Stack>
         </Callout>
       ) : (
         <Text size="sm" muted>
-          沒有符合的項目。
+          {m.nothingMatched}
         </Text>
       )}
     </PopupFrame>
@@ -674,17 +702,18 @@ export default function Panel() {
   const state = read(view);
   if (!state) {
     const failure = read(flash);
+    const m = msgs();
     return failure ? (
-      <Callout tone="danger" title="無法載入清單">
+      <Callout tone="danger" title={m.loadFailedTitle}>
         <Stack gap="sm">
           <Text size="sm">{failure.text}</Text>
           <Button size="sm" icon="refresh" onPress={refresh}>
-            重試
+            {m.retry}
           </Button>
         </Stack>
       </Callout>
     ) : (
-      <Spinner label="載入清單" />
+      <Spinner label={m.loading} />
     );
   }
   const open = read(popup);

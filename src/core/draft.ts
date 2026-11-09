@@ -1,5 +1,6 @@
 // 表單草稿 ↔ Todo：驗證使用者輸入，錯誤訊息直接給面板顯示。
 import { formatDateTime } from './format.ts';
+import { type Lang, messages } from './i18n.ts';
 import type { Repeat, RepeatUnit, Todo, TodoDraft } from './types.ts';
 
 export const TITLE_MAX = 200;
@@ -31,60 +32,61 @@ function parseCount(text: string, min: number): number | null {
 
 export type DraftFields = Pick<Todo, 'title' | 'body' | 'status' | 'startAt' | 'durationMin' | 'repeat' | 'notify'>;
 
-export function parseDraft(draft: TodoDraft): { ok: true; fields: DraftFields } | { ok: false; error: string } {
+export function parseDraft(draft: TodoDraft, lang: Lang): { ok: true; fields: DraftFields } | { ok: false; error: string } {
+  const t = messages(lang);
   const fail = (error: string) => ({ ok: false as const, error });
   const title = draft.title.trim();
   if (!title) {
-    return fail('標題不可空白');
+    return fail(t.errTitleEmpty);
   }
   if (title.includes('\n') || title.length > TITLE_MAX) {
-    return fail(`標題限單行、${TITLE_MAX} 字以內`);
+    return fail(t.errTitleTooLong(TITLE_MAX));
   }
   if (draft.body.length > BODY_MAX) {
-    return fail(`內容限 ${BODY_MAX} 字以內`);
+    return fail(t.errBodyTooLong(BODY_MAX));
   }
   if (!['enabled', 'disabled', 'done'].includes(draft.status)) {
-    return fail('狀態不正確');
+    return fail(t.errStatus);
   }
 
   let startAt: number | null = null;
   if (draft.start.trim()) {
     startAt = parseLocalDateTime(draft.start);
     if (startAt === null) {
-      return fail('開始時間格式應為 YYYY-MM-DD HH:mm，例如 2026-11-10 14:00');
+      return fail(t.errStart);
     }
   }
 
   const durationMin = draft.duration.trim() ? parseCount(draft.duration, 0) : 0;
   if (durationMin === null) {
-    return fail('持續時間要填 0 以上的整數（分鐘）');
+    return fail(t.errDuration);
   }
 
   let repeat: Repeat | null = null;
   if (draft.repeatUnit !== 'none') {
     if (!UNITS.includes(draft.repeatUnit)) {
-      return fail('重複單位不正確');
+      return fail(t.errUnit);
     }
     if (startAt === null) {
-      return fail('設定重複前要先填開始時間');
+      return fail(t.errRepeatNeedsStart);
     }
     const every = parseCount(draft.every || '1', 1);
     if (every === null) {
-      return fail('重複間隔要填 1 以上的整數');
+      return fail(t.errEvery);
     }
     if (draft.endKind === 'count') {
       const count = parseCount(draft.count, 1);
       if (count === null) {
-        return fail('重複次數要填 1 以上的整數');
+        return fail(t.errCount);
       }
       repeat = { unit: draft.repeatUnit, every, end: { kind: 'count', count } };
     } else if (draft.endKind === 'until') {
       const until = parseLocalDateTime(draft.until);
       if (until === null) {
-        return fail('截止時間格式應為 YYYY-MM-DD HH:mm');
+        return fail(t.errUntil);
       }
       if (until < startAt) {
-        return fail('截止時間不可早於開始時間');
+        return fail(t.errUntilBeforeStart);
       }
       repeat = { unit: draft.repeatUnit, every, end: { kind: 'until', until } };
     } else {

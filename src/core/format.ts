@@ -1,9 +1,6 @@
 // 顯示用文字：日期、持續時間、重複規則。
-import type { Repeat, RepeatUnit, TodoStatus } from './types.ts';
-
-export const STATUS_LABELS: Record<TodoStatus, string> = { enabled: '啟用', disabled: '停用', done: '已完成' };
-
-export const UNIT_LABELS: Record<RepeatUnit, string> = { minute: '分鐘', hour: '小時', day: '天', week: '週', month: '個月' };
+import { type Lang, messages } from './i18n.ts';
+import type { Repeat } from './types.ts';
 
 const pad = (n: number) => String(n).padStart(2, '0');
 
@@ -19,7 +16,8 @@ export function formatClock(ms: number): string {
 }
 
 /** 清單與狀態列用的短格式：今天 14:00／明天 09:30／11/12 14:00／2027/01/05 14:00 */
-export function formatShort(ms: number, now: number): string {
+export function formatShort(ms: number, now: number, lang: Lang): string {
+  const t = messages(lang);
   const d = new Date(ms);
   const today = new Date(now);
   const dayDiff = Math.round(
@@ -29,40 +27,41 @@ export function formatShort(ms: number, now: number): string {
   );
   const clock = formatClock(ms);
   if (dayDiff === 0) {
-    return `今天 ${clock}`;
+    return t.today(clock);
   }
   if (dayDiff === 1) {
-    return `明天 ${clock}`;
+    return t.tomorrow(clock);
   }
   if (dayDiff === -1) {
-    return `昨天 ${clock}`;
+    return t.yesterday(clock);
   }
   const date = `${pad(d.getMonth() + 1)}/${pad(d.getDate())}`;
   return d.getFullYear() === today.getFullYear() ? `${date} ${clock}` : `${d.getFullYear()}/${date} ${clock}`;
 }
 
-export function formatDuration(min: number): string {
+export function formatDuration(min: number, lang: Lang): string {
+  const t = messages(lang);
   const h = Math.floor(min / 60);
   const m = min % 60;
   if (h === 0) {
-    return `${m} 分鐘`;
+    return t.minutes(m);
   }
-  return m === 0 ? `${h} 小時` : `${h} 小時 ${m} 分鐘`;
+  return m === 0 ? t.hours(h) : t.hoursMinutes(h, m);
 }
 
-export function describeRepeat(repeat: Repeat | null): string {
+export function describeRepeat(repeat: Repeat | null, lang: Lang): string {
+  const t = messages(lang);
   if (!repeat) {
-    return '不重複';
+    return t.repeatNone;
   }
-  const unit = UNIT_LABELS[repeat.unit];
-  const every = repeat.every === 1 ? `每${unit === '個月' ? '月' : unit}` : `每 ${repeat.every} ${unit}`;
+  const every = t.repeatEvery(repeat.every, repeat.unit);
   switch (repeat.end.kind) {
     case 'never':
-      return `${every}，不停止`;
+      return t.repeatNever(every);
     case 'count':
-      return `${every}，共 ${repeat.end.count} 次`;
+      return t.repeatCount(every, repeat.end.count);
     case 'until':
-      return `${every}，至 ${formatDateTime(repeat.end.until)}`;
+      return t.repeatUntil(every, formatDateTime(repeat.end.until));
   }
 }
 

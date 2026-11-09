@@ -1,5 +1,6 @@
 // todos 存在外掛自己的 storage（storage:own），worker 是唯一的寫入者。
 import type { JsonValue, OrcaWorkerApi } from 'orca/worker';
+import { type Lang, pickLang } from '../core/i18n.ts';
 import type { Todo } from '../core/types.ts';
 
 export const STORAGE_KEY = 'todos';
@@ -35,4 +36,16 @@ export async function loadTodos(orca: OrcaWorkerApi): Promise<Todo[]> {
 export async function saveTodos(orca: OrcaWorkerApi, todos: Todo[]): Promise<void> {
   const value: Stored = { version: VERSION, todos };
   await orca.storage.set(STORAGE_KEY, value as unknown as JsonValue);
+}
+
+/** 介面語言：worker 拿不到 Orca 的語言，存面板最後一次回報的；面板還沒開過時退回系統語系。 */
+export const LANG_KEY = 'lang';
+
+export async function loadLang(orca: OrcaWorkerApi): Promise<Lang> {
+  const raw = await orca.storage.get(LANG_KEY);
+  return raw === 'zh' || raw === 'en' ? raw : pickLang(Intl.DateTimeFormat().resolvedOptions().locale);
+}
+
+export async function saveLang(orca: OrcaWorkerApi, lang: Lang): Promise<void> {
+  await orca.storage.set(LANG_KEY, lang);
 }

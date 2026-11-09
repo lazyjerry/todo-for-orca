@@ -4,6 +4,8 @@ import * as panel from './panel.tsx';
 import type { ViewState } from './protocol.ts';
 
 const MIN = 60_000;
+/** 面板回報給 worker 的語言（lang.set），不混進各測試的 calls */
+const langReports: string[] = [];
 
 function todo(patch: Partial<Todo>): Todo {
   const now = Date.now();
@@ -42,6 +44,10 @@ function host(calls: { name: string; input: unknown }[]) {
   };
   return mockHost({
     requests: {
+      'lang.set': (input: { lang: 'zh' | 'en' }) => {
+        langReports.push(input.lang);
+        return input;
+      },
       'state.get': () => state(),
       'todo.delete': record('todo.delete'),
       'todo.purge': record('todo.purge'),
@@ -55,7 +61,7 @@ function host(calls: { name: string; input: unknown }[]) {
 }
 
 test('側欄最上方顯示正在進行與持續時間；清單預設只顯示啟用，可切換狀態', async () => {
-  const view = await mount(panel, { host: host([]) });
+  const view = await mount(panel, { host: host([]), locale: 'zh-TW' });
   assert.ok(view.find({ text: '正在進行' }));
   assert.ok(view.find({ text: '持續 25 分鐘' }));
   assert.ok(view.find({ type: 'ListItem', label: '下一件事' }));
@@ -70,7 +76,7 @@ test('側欄最上方顯示正在進行與持續時間；清單預設只顯示�
 
 test('點項目開整頁 popup 顯示 Markdown 內容；刪除要先確認', async () => {
   const calls: { name: string; input: unknown }[] = [];
-  const view = await mount(panel, { host: host(calls) });
+  const view = await mount(panel, { host: host(calls), locale: 'zh-TW' });
   await view.press({ type: 'ListItem', label: '專注時段' });
   assert.ok(view.find({ type: 'Heading', text: '專注時段' }));
   assert.equal(view.find({ type: 'IconButton', label: '新增 Todo' }), null);
@@ -84,7 +90,7 @@ test('點項目開整頁 popup 顯示 Markdown 內容；刪除要先確認', asy
 
 test('新增：填表後儲存送出草稿，存好跳到該筆的內容頁', async () => {
   const calls: { name: string; input: unknown }[] = [];
-  const view = await mount(panel, { host: host(calls) });
+  const view = await mount(panel, { host: host(calls), locale: 'zh-TW' });
   await view.press({ type: 'IconButton', label: '新增 Todo' });
   await view.type({ label: '標題' }, '寫週報');
   await view.type({ label: '開始時間' }, '2026-11-20 17:00');
@@ -105,7 +111,7 @@ test('新增：填表後儲存送出草稿，存好跳到該筆的內容頁', as
 
 test('批次刪除：列出將刪除的項目，確定後才送出勾選的狀態', async () => {
   const calls: { name: string; input: unknown }[] = [];
-  const view = await mount(panel, { host: host(calls) });
+  const view = await mount(panel, { host: host(calls), locale: 'zh-TW' });
   await view.press({ type: 'IconButton', label: '批次刪除' });
   assert.ok(view.find({ text: '・做完了（已完成）' }));
   await view.toggle({ label: '停用（1 筆）' });
@@ -113,5 +119,20 @@ test('批次刪除：列出將刪除的項目，確定後才送出勾選的狀�
   await view.press({ text: '確定刪除 2 筆' });
   assert.deepEqual(calls, [{ name: 'todo.purge', input: { statuses: ['done', 'disabled'] } }]);
   assert.ok(view.find({ type: 'IconButton', label: '新增 Todo' }));
+  await view.unmount();
+});
+
+test('英文介面：Orca 不是中文時顯示英文，並把語言回報給 worker', async () => {
+  langReports.length = 0;
+  const view = await mount(panel, { host: host([]), locale: 'en-US' });
+  assert.ok(view.find({ text: 'In progress' }));
+  assert.ok(view.find({ text: 'Lasts 25 min' }));
+  assert.ok(view.find({ type: 'IconButton', label: 'Add todo' }));
+  await view.press({ type: 'ListItem', label: '專注時段' });
+  assert.ok(view.find({ text: 'Schedule' }));
+  await view.press({ text: 'Delete' });
+  assert.ok(view.find({ text: 'This cannot be undone.' }));
+  assert.deepEqual(langReports, ['en']);
+  assert.deepEqual(view.errors, []);
   await view.unmount();
 });

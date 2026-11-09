@@ -1,4 +1,5 @@
 // panel 與 worker 的請求契約，兩邊共用。
+import type { Lang } from './core/i18n.ts';
 import type { Todo, TodoDraft, TodoStatus } from './core/types.ts';
 
 export type { Repeat, RepeatEnd, RepeatUnit, Todo, TodoDraft, TodoStatus } from './core/types.ts';
@@ -29,6 +30,8 @@ declare module 'orca' {
     'todo.delete': { input: { id: string }; output: ActionResult };
     'todo.purge': { input: { statuses: PurgeStatus[] }; output: ActionResult };
     'todo.testNotify': { input: { id: string }; output: { flash: Flash } };
+    /** 面板開啟時回報 Orca 的介面語言，worker 的通知、狀態列與提示訊息跟著換 */
+    'lang.set': { input: { lang: Lang }; output: { lang: Lang } };
   }
   interface PluginPanelEvents {
     /** 資料變動，或場次跨過開始／結束時間時，送給所有開著的面板 */

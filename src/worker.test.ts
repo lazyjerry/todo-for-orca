@@ -27,6 +27,7 @@ function stored(todos: Partial<Todo>[]): Record<string, JsonValue> {
         ...t,
       })),
     },
+    lang: 'zh',
   } as unknown as Record<string, JsonValue>;
 }
 
@@ -112,5 +113,21 @@ test('批次刪除只刪勾選的已完成／停用，啟用中的保留', async
   const none = await worker.request('todo.purge', { statuses: [] });
   assert.equal(none.flash?.tone, 'danger');
   assert.equal(none.state.todos.length, 2);
+  await worker.deactivate();
+});
+
+test('語言：面板回報英文後，狀態列與提示訊息改用英文，並記住給下次啟動', async () => {
+  const now = Date.now();
+  const host = mockHost({ storage: stored([{ title: 'Focus', startAt: now - 5 * MIN, durationMin: 25 }]) });
+  const worker = await mountWorker(main, { host });
+  const latestNow = () => (host.callsOf('statusBar.update') as { id: string; text?: string }[]).filter((u) => u.id === 'now').at(-1)?.text ?? '';
+  await worker.request('state.get');
+  assert.match(latestNow(), /^進行中：Focus/);
+  assert.deepEqual(await worker.request('lang.set', { lang: 'en' }), { lang: 'en' });
+  assert.match(latestNow(), /^Now: Focus \(until \d\d:\d\d\)$/);
+  assert.equal(host.data().storage.lang, 'en');
+  const bad = await worker.request('todo.save', { ...emptyDraft(), title: '' });
+  assert.equal(bad.flash?.text, 'Title cannot be empty');
+  assert.deepEqual(worker.refusals, []);
   await worker.deactivate();
 });

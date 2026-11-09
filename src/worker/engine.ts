@@ -1,5 +1,6 @@
 // 定時檢查的計算：該送哪些通知、狀態列顯示什麼。純函式，時間由呼叫端給。
 import { describeRepeat, firstLine, formatClock, formatDateTime, formatDuration, formatShort } from '../core/format.ts';
+import { type Lang, messages } from '../core/i18n.ts';
 import { dueBetween, highlights, nextAfter, ongoingAt } from '../core/schedule.ts';
 import type { Todo } from '../core/types.ts';
 
@@ -20,7 +21,8 @@ function clip(text: string, max: number): string {
 }
 
 /** 每筆啟用、有開啟通知的 todo，只通知 (notifiedThrough, now] 內最新的一場。 */
-export function dueReminders(todos: readonly Todo[], now: number): Reminder[] {
+export function dueReminders(todos: readonly Todo[], now: number, lang: Lang): Reminder[] {
+  const t = messages(lang);
   const out: Reminder[] = [];
   for (const todo of todos) {
     if (todo.status !== 'enabled' || !todo.notify) {
@@ -30,8 +32,8 @@ export function dueReminders(todos: readonly Todo[], now: number): Reminder[] {
     if (start === null) {
       continue;
     }
-    const when = `${formatClock(start)} 開始${todo.durationMin > 0 ? `，持續 ${formatDuration(todo.durationMin)}` : ''}`;
-    const late = now - start > LATE_MS ? `（錯過的提醒：${formatShort(start, now)}）` : '';
+    const when = t.reminderStarts(formatClock(start)) + (todo.durationMin > 0 ? t.reminderLasts(formatDuration(todo.durationMin, lang)) : '');
+    const late = now - start > LATE_MS ? t.reminderMissed(formatShort(start, now, lang)) : '';
     out.push({ id: todo.id, title: clip(todo.title, 120), body: [when + late, firstLine(todo.body)].filter(Boolean).join('\n') });
   }
   return out;
@@ -43,21 +45,22 @@ export interface BarItem {
   tooltip: string;
 }
 
-export function statusBar(todos: readonly Todo[], now: number): { now: BarItem; next: BarItem } {
+export function statusBar(todos: readonly Todo[], now: number, lang: Lang): { now: BarItem; next: BarItem } {
+  const t = messages(lang);
   const { ongoing, next } = highlights(todos, now);
   const hidden: BarItem = { visible: false, text: '', tooltip: '' };
 
   let nowItem = hidden;
   const first = ongoing[0];
   if (first) {
-    const suffix = ongoing.length > 1 ? ` 等 ${ongoing.length} 項` : `（至 ${formatClock(first.end)}）`;
-    const prefix = '進行中：';
+    const suffix = ongoing.length > 1 ? t.barNowMore(ongoing.length) : t.barNowUntil(formatClock(first.end));
+    const prefix = t.barNowPrefix;
     nowItem = {
       visible: true,
       text: prefix + clip(first.todo.title, BAR_TEXT_MAX - prefix.length - suffix.length) + suffix,
       tooltip: clip(
         ongoing
-          .map((o) => `${o.todo.title}　${formatClock(o.start)}–${formatClock(o.end)}（持續 ${formatDuration(o.todo.durationMin)}）`)
+          .map((o) => t.barNowTooltip(o.todo.title, `${formatClock(o.start)}–${formatClock(o.end)}`, formatDuration(o.todo.durationMin, lang)))
           .join('\n'),
         BAR_TOOLTIP_MAX,
       ),
@@ -66,12 +69,12 @@ export function statusBar(todos: readonly Todo[], now: number): { now: BarItem; 
 
   let nextItem = hidden;
   if (next) {
-    const prefix = `下一個：${formatShort(next.at, now)} `;
+    const prefix = t.barNextPrefix(formatShort(next.at, now, lang));
     const details = [
       next.todo.title,
       formatDateTime(next.at),
-      next.todo.durationMin > 0 ? `持續 ${formatDuration(next.todo.durationMin)}` : '',
-      describeRepeat(next.todo.repeat),
+      next.todo.durationMin > 0 ? t.lasts(formatDuration(next.todo.durationMin, lang)) : '',
+      describeRepeat(next.todo.repeat, lang),
     ];
     nextItem = {
       visible: true,
@@ -91,12 +94,13 @@ export function scheduleSignature(todos: readonly Todo[], now: number): string {
 }
 
 /** 指令與狀態列按下時顯示的摘要。 */
-export function summaryText(todos: readonly Todo[], now: number): string {
+export function summaryText(todos: readonly Todo[], now: number, lang: Lang): string {
+  const t = messages(lang);
   const { ongoing, next } = highlights(todos, now);
   const lines: string[] = [];
   for (const o of ongoing) {
-    lines.push(`進行中：${o.todo.title}（${formatClock(o.start)}–${formatClock(o.end)}，持續 ${formatDuration(o.todo.durationMin)}）`);
+    lines.push(t.summaryNow(o.todo.title, `${formatClock(o.start)}–${formatClock(o.end)}`, formatDuration(o.todo.durationMin, lang)));
   }
-  lines.push(next ? `下一個：${formatShort(next.at, now)} ${next.todo.title}` : '下一個：沒有排定的 todo');
+  lines.push(next ? t.summaryNext(formatShort(next.at, now, lang), next.todo.title) : t.summaryNoNext);
   return lines.join('\n');
 }
