@@ -2,7 +2,7 @@
   "manifestVersion": 2,
   "id": "todo-list",
   "name": "Daily To-Do List",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "A sidebar to-do list for the small tasks of your day: timed desktop reminders, repeats and durations, with the current and next to-do in the status bar. 處理一天內小任務的側欄待辦清單：到點桌面提醒、可重複與設定持續時間，狀態列顯示進行中與下一件事。",
   "license": "Apache-2.0",
   "author": {
