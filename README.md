@@ -31,6 +31,7 @@
 - **Markdown 內容**：編輯頁右上角的小按鈕切換「撰寫／預覽」。輸入時有兩項輔助：
   - 在列表項目按 Enter 會延續符號（`-`、`*`、`1.` 自動加一、待辦補 `- [ ] `），空項目按 Enter 則結束列表。
   - 在列表符號後打 `[` 會補成待辦 `[ ] `，例如 `- [` → `- [ ] `。
+- **指定工作區**：編輯頁可替 todo 指定一個 Orca 工作區（Git worktree 或資料夾），從下拉選單選，或按「帶入目前工作區」。指定後，清單與內容頁會在項目下方顯示工作區名稱（與分支），點一下就切換過去，效果等同點 Orca 左側欄。
 
 ## 使用細節
 
@@ -53,6 +54,8 @@
 | 靠右的小頁籤 | 撰寫／預覽改用靠右的 xs 按鈕切換 | `Tabs` 無法調整大小與對齊；外掛的操作一律放右側，與 Orca 原生操作做出區隔 |
 | 格式工具列（粗體、列表、標題…） | 只做 Enter 延續列表與 `[` 補成待辦 | `Textarea` 只回報整段文字，取不到也設不了游標與選取範圍，圖示集也沒有格式圖示 |
 | 在內容頁直接勾選待辦 | 方框僅供顯示，到編輯頁修改 | `Markdown` 元件的方框是唯讀的；改畫可勾選元件後，每勾一次整個面板都要重畫 |
+| 點清單項目上的工作區直接跳轉 | 工作區按鈕放在項目下方另起一列，有工作區的項目各自成段 | `List` 只能放 `ListItem`，`ListItem` 整列是按鈕、不能再放其他控制項 |
+| 精準認出目前開啟的工作區 | 用名稱＋分支比對，比對不到改比唯一的分支，仍認不出就請使用者從清單選 | `workspace.readContext` 只給分支與顯示名稱，不給工作區 id |
 
 ## 權限
 
@@ -60,6 +63,10 @@
 |---|---|
 | `storage:own` | 存放待辦項目與介面語言（外掛自己的 storage，key 為 `todos`、`lang`） |
 | `notifications:show` | 發送桌面通知 |
+| `workspace:read` | 列出 Orca 的工作區、讀取目前開啟的工作區，供 todo 指定 |
+| `workspace:write` | 點工作區按鈕時切換到該工作區 |
+
+工作區功能需要 Orca 提供 host API 1.3（`workspace.list`、`workspace.open`）；版本較舊或未核准上述權限時，編輯頁會顯示提示，其他功能照常運作。從舊版更新後需重新核准權限。
 
 執行層級為 `trusted-worker`：worker 每 15 秒檢查一次場次並更新狀態列。由於 manifest 宣告了 `statusBarItems`，外掛啟用期間 Orca 會持續執行 worker。
 
@@ -81,7 +88,7 @@ orca plugin dev watch todo-list    # 以開發模式載入 Orca；第一次會�
 ```
 src/
 ├── core/          # panel 與 worker 共用：資料模型、場次計算（schedule）、草稿驗證（draft）、顯示格式（format）、介面文字（i18n）、Markdown 輸入輔助（markdown）
-├── worker/        # storage 讀寫（store）、通知與狀態列的計算（engine）
+├── worker/        # storage 讀寫（store）、通知與狀態列的計算（engine）、Orca 工作區查詢（workspaces）
 ├── worker.ts      # worker 進入點：請求處理、定時檢查
 ├── panel.tsx      # 右側欄面板
 └── protocol.ts    # panel 與 worker 的請求契約
