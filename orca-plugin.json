@@ -1,0 +1,40 @@
+{
+  "manifestVersion": 2,
+  "id": "todo-list",
+  "name": "Todo List",
+  "version": "0.1.0",
+  "description": "A todo list in the sidebar with timed desktop reminders (repeat, stop conditions, duration) and the current / next todo in the status bar. 側欄 todo 清單：定時桌面通知（重複、停止條件、持續時間），狀態列顯示進行中與下一個 todo。",
+  "license": "Apache-2.0",
+  "author": {
+    "name": "LazyJerry",
+    "url": "https://github.com/lazyjerry"
+  },
+  "engines": {
+    "orca": ">=1.4.248"
+  },
+  "execution": "trusted-worker",
+  "pluginApi": 1,
+  "main": "src/worker.ts",
+  "contributes": {
+    "panels": [
+      {
+        "id": "todo-list",
+        "title": "Todo List",
+        "icon": "calendar",
+        "entry": "src/panel.tsx",
+        "ui": "components"
+      }
+    ],
+    "commands": [
+      { "id": "todo-list.showStatus", "title": "Todo List: 顯示進行中與下一個 Todo" }
+    ],
+    "statusBarItems": [
+      { "id": "now", "icon": "play", "tone": "warning", "tooltip": "正在進行的 Todo", "command": "todo-list.showStatus" },
+      { "id": "next", "icon": "bell", "tone": "accent", "tooltip": "下一個 Todo", "command": "todo-list.showStatus" }
+    ]
+  },
+  "capabilities": [
+    { "kind": "storage:own" },
+    { "kind": "notifications:show" }
+  ]
+}
