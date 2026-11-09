@@ -110,6 +110,7 @@ export function emptyDraft(): TodoDraft {
     count: '',
     until: '',
     notify: true,
+    workspaceId: '',
   };
 }
 
@@ -128,5 +129,6 @@ export function draftFromTodo(todo: Todo): TodoDraft {
     count: end?.kind === 'count' ? String(end.count) : '',
     until: end?.kind === 'until' ? formatDateTime(end.until) : '',
     notify: todo.notify,
+    workspaceId: todo.workspace?.id ?? '',
   };
 }

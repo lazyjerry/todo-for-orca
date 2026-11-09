@@ -30,10 +30,20 @@ export interface Todo {
   durationMin: number;
   repeat: Repeat | null;
   notify: boolean;
+  /** 指定的 Orca 工作區（worktree 或資料夾）；舊資料沒有這個欄位，視同 null */
+  workspace?: TodoWorkspace | null;
   /** worker 已處理到的時間點：早於等於它的場次不再通知 */
   notifiedThrough: number;
   createdAt: number;
   updatedAt: number;
+}
+
+/** 存下指定當時的名稱與分支：工作區被移除後清單仍顯示得出來 */
+export interface TodoWorkspace {
+  id: string;
+  kind: 'worktree' | 'folder';
+  name: string;
+  branch: string | null;
 }
 
 /** 表單欄位，全部是使用者輸入的原始字串；由 worker 驗證後轉成 Todo。 */
@@ -50,4 +60,6 @@ export interface TodoDraft {
   count: string;
   until: string;
   notify: boolean;
+  /** 空字串＝不指定工作區 */
+  workspaceId: string;
 }

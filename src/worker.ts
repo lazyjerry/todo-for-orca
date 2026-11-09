@@ -4,10 +4,11 @@ import { randomUUID } from 'node:crypto';
 import type { OrcaWorkerApi } from 'orca/worker';
 import { parseDraft } from './core/draft.ts';
 import { type Lang, messages } from './core/i18n.ts';
-import type { Todo } from './core/types.ts';
+import type { Todo, TodoWorkspace } from './core/types.ts';
 import type { ActionResult, Flash, ViewState } from './protocol.ts';
 import { type BarItem, dueReminders, scheduleSignature, statusBar, summaryText } from './worker/engine.ts';
 import { loadLang, loadTodos, saveLang, saveTodos } from './worker/store.ts';
+import { listWorkspaces, workspaceApiReady, workspaceOptions } from './worker/workspaces.ts';
 
 const TICK_MS = 15_000;
 
@@ -117,16 +118,20 @@ export default function activate(orca: OrcaWorkerApi): void {
       const todos = await serial(() => loadTodos(orca));
       return { state: { todos }, flash: { tone: 'danger', text: parsed.error } };
     }
+    // 存下工作區當下的名稱與分支；查詢放在 serial 外，不卡住定時檢查
+    const listed = draft.workspaceId ? await findWorkspace(draft.workspaceId) : null;
     let savedId = '';
     const result = await mutation<null>((todos, _input, now) => {
       // 存檔當下以前的場次都不補發通知：改時間或新增時不會冒出一串舊提醒
       if (draft.id) {
         const existing = find(todos, draft.id);
         savedId = existing.id;
-        const next: Todo = { ...existing, ...parsed.fields, notifiedThrough: now, updatedAt: now };
+        const workspace = pickWorkspace(draft.workspaceId, listed, existing);
+        const next: Todo = { ...existing, ...parsed.fields, workspace, notifiedThrough: now, updatedAt: now };
         return { todos: todos.map((t) => (t.id === existing.id ? next : t)), flash: { tone: 'success', text: msg().flashSaved(next.title) } };
       }
-      const created: Todo = { id: randomUUID(), ...parsed.fields, notifiedThrough: now, createdAt: now, updatedAt: now };
+      const workspace = pickWorkspace(draft.workspaceId, listed, undefined);
+      const created: Todo = { id: randomUUID(), ...parsed.fields, workspace, notifiedThrough: now, createdAt: now, updatedAt: now };
       savedId = created.id;
       return { todos: [...todos, created], flash: { tone: 'success', text: msg().flashCreated(created.title) } };
     })(null);
@@ -180,6 +185,54 @@ export default function activate(orca: OrcaWorkerApi): void {
       };
     } catch (err) {
       return { flash: { tone: 'danger', text: msg().testFailed(errorText(err)) } };
+    }
+  });
+
+  /** 找不到或查詢失敗都回 null，交給 pickWorkspace 決定沿用舊的或報錯。 */
+  async function findWorkspace(id: string): Promise<TodoWorkspace | null> {
+    if (!workspaceApiReady(orca)) {
+      return null;
+    }
+    try {
+      return (await listWorkspaces(orca)).find((w) => w.id === id) ?? null;
+    } catch (err) {
+      orca.log(`workspace.list failed: ${errorText(err)}`);
+      return null;
+    }
+  }
+
+  /** 沒改工作區時沿用存著的快照：工作區暫時列不出來（已移除、遠端主機離線）也能照常存檔。 */
+  function pickWorkspace(id: string, listed: TodoWorkspace | null, existing: Todo | undefined): TodoWorkspace | null {
+    if (!id) {
+      return null;
+    }
+    if (listed) {
+      return listed;
+    }
+    if (existing?.workspace?.id === id) {
+      return existing.workspace;
+    }
+    throw new UserError(msg().errWorkspaceMissing);
+  }
+
+  orca.panels.handle('workspace.options', async () => {
+    try {
+      return await workspaceOptions(orca);
+    } catch (err) {
+      orca.log(`workspace options failed: ${errorText(err)}`);
+      return { available: false, workspaces: [], currentId: null };
+    }
+  });
+
+  orca.panels.handle('workspace.open', async ({ id }): Promise<{ flash?: Flash }> => {
+    if (!workspaceApiReady(orca)) {
+      return { flash: { tone: 'warning', text: msg().workspaceUnavailable } };
+    }
+    try {
+      await orca.host.call('workspace.open', { workspaceId: id });
+      return {};
+    } catch (err) {
+      return { flash: { tone: 'danger', text: msg().workspaceOpenFailed(errorText(err)) } };
     }
   });
 

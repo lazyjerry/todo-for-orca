@@ -30,7 +30,7 @@ function state(): ViewState {
   return {
     todos: [
       todo({ id: 'live', title: '專注時段', startAt: now - 5 * MIN, durationMin: 25, body: '## 目標\n- 寫測試' }),
-      todo({ id: 'soon', title: '下一件事', startAt: now + 30 * MIN }),
+      todo({ id: 'soon', title: '下一件事', startAt: now + 30 * MIN, workspace: { id: 'w2', kind: 'worktree', name: 'feature-x', branch: 'fix-login' } }),
       todo({ id: 'off', title: '暫停中', status: 'disabled' }),
       todo({ id: 'fin', title: '做完了', status: 'done' }),
     ],
@@ -49,6 +49,18 @@ function host(calls: { name: string; input: unknown }[]) {
         return input;
       },
       'state.get': () => state(),
+      'workspace.options': {
+        available: true,
+        workspaces: [
+          { id: 'w1', kind: 'worktree', name: 'todo-list', branch: 'main' },
+          { id: 'w2', kind: 'worktree', name: 'feature-x', branch: 'fix-login' },
+        ],
+        currentId: 'w1',
+      },
+      'workspace.open': (input: unknown) => {
+        calls.push({ name: 'workspace.open', input });
+        return {};
+      },
       'todo.delete': record('todo.delete'),
       'todo.purge': record('todo.purge'),
       'todo.setStatus': record('todo.setStatus'),
@@ -184,4 +196,25 @@ test('持續時間快速按鈕：一個時辰填 120 分、整天填 480 分', a
   await view2.press({ type: 'Button', text: '儲存' });
   assert.equal((calls2[0]?.input as Record<string, unknown>).duration, '480');
   await view2.unmount();
+});
+
+test('工作區：清單與內容頁顯示指定的工作區，按下切換；編輯頁可改成目前工作區', async () => {
+  const calls: { name: string; input: unknown }[] = [];
+  const view = await mount(panel, { host: host(calls), locale: 'zh-TW' });
+  await view.press({ type: 'Button', text: 'feature-x · fix-login' });
+  assert.deepEqual(calls, [{ name: 'workspace.open', input: { id: 'w2' } }]);
+
+  await view.press({ type: 'ListItem', label: '下一件事' });
+  assert.ok(view.find({ type: 'Button', text: 'feature-x · fix-login' }));
+
+  await view.press({ type: 'Button', text: '編輯' });
+  assert.equal(view.valueOf({ type: 'Select', label: '指定工作區' }), 'w2');
+  await view.press({ type: 'Button', text: '帶入目前工作區' });
+  await view.press({ type: 'Button', text: '儲存' });
+  const save = calls.find((c) => c.name === 'todo.save');
+  assert.equal((save?.input as Record<string, unknown>).id, 'soon');
+  assert.equal((save?.input as Record<string, unknown>).workspaceId, 'w1');
+  assert.deepEqual(view.errors, []);
+  assert.deepEqual(view.refusals, []);
+  await view.unmount();
 });

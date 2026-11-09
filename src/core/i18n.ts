@@ -163,6 +163,19 @@ const zh = {
   purgeListTitle: (count: number) => `將刪除以下 ${count} 筆，刪除後無法復原`,
   purgeListItem: (title: string, status: string) => `・${title}（${status}）`,
   nothingMatched: '沒有符合的項目。',
+  workspaceSection: '工作區',
+  workspaceLabel: '指定工作區',
+  workspaceNone: '不指定',
+  workspaceLoading: '載入工作區清單…',
+  workspaceUseCurrent: '帶入目前工作區',
+  workspaceNoCurrent: '認不出目前開啟的工作區，請從清單選。',
+  workspaceHint: '指定後，清單與內容頁會顯示工作區名稱，點一下就切過去。',
+  workspaceUnlisted: (name: string) => `${name}（目前不在工作區清單）`,
+  workspaceOption: (name: string, branch: string | null) => (branch ? `${name}（${branch}）` : `${name}（資料夾）`),
+  workspaceJumpTooltip: (name: string) => `切換到工作區「${name}」`,
+  workspaceUnavailable: '這版 Orca 不支援工作區，或外掛還沒取得工作區權限（需重新核准）。',
+  workspaceOpenFailed: (reason: string) => `切換工作區失敗：${reason}`,
+  errWorkspaceMissing: '找不到指定的工作區，可能已被移除。',
 };
 
 export type Messages = typeof zh;
@@ -328,6 +341,19 @@ const en: Messages = {
   purgeListTitle: (count) => `${plural(count, 'todo', 'todos')} will be deleted. This cannot be undone.`,
   purgeListItem: (title, status) => `• ${title} (${status})`,
   nothingMatched: 'Nothing matched.',
+  workspaceSection: 'Workspace',
+  workspaceLabel: 'Workspace',
+  workspaceNone: 'None',
+  workspaceLoading: 'Loading workspaces…',
+  workspaceUseCurrent: 'Use current workspace',
+  workspaceNoCurrent: 'Could not tell which workspace is open. Pick one from the list.',
+  workspaceHint: 'The list and the detail page show the workspace name; press it to switch there.',
+  workspaceUnlisted: (name) => `${name} (not in the workspace list now)`,
+  workspaceOption: (name, branch) => (branch ? `${name} (${branch})` : `${name} (folder)`),
+  workspaceJumpTooltip: (name) => `Switch to workspace “${name}”`,
+  workspaceUnavailable: 'This Orca does not support workspaces, or the plugin lacks workspace access (re-approve it).',
+  workspaceOpenFailed: (reason) => `Could not switch workspace: ${reason}`,
+  errWorkspaceMissing: 'The workspace was not found. It may have been removed.',
 };
 
 export function messages(lang: Lang): Messages {

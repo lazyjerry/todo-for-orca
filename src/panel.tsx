@@ -41,8 +41,8 @@ import { describeRepeat, formatClock, formatDateTime, formatDuration, formatShor
 import { assistMarkdown } from './core/markdown.ts';
 import { type Lang, type Messages, messages, pickLang } from './core/i18n.ts';
 import { highlights, nextAfter, ongoingAt } from './core/schedule.ts';
-import type { RepeatUnit, Todo, TodoDraft, TodoStatus } from './core/types.ts';
-import type { ActionResult, Flash, PurgeStatus, ViewState } from './protocol.ts';
+import type { RepeatUnit, Todo, TodoDraft, TodoStatus, TodoWorkspace } from './core/types.ts';
+import type { ActionResult, Flash, PurgeStatus, ViewState, WorkspaceOptions } from './protocol.ts';
 
 type Popup = { kind: 'detail'; id: string } | { kind: 'edit' } | { kind: 'purge' };
 
@@ -60,6 +60,8 @@ const bodyTab = atom('write');
 /** 清單只顯示一種狀態；不持久化，重開面板回到預設的「啟用」。 */
 const statusFilter = atom<TodoStatus>('enabled');
 const purgeChoice = atom<Record<PurgeStatus, boolean>>({ done: true, disabled: false });
+/** 編輯頁的工作區下拉選單；每次開編輯頁重抓，null＝載入中 */
+const workspaceOpts = atom<WorkspaceOptions | null>(null);
 
 const STATUS_ORDER: TodoStatus[] = ['enabled', 'disabled', 'done'];
 /** 狀態的代表色：清單外框、徽章共用，讓三組一眼分得開。 */
@@ -145,6 +147,7 @@ function openEditor(todo?: Todo): void {
   set(draft, todo ? draftFromTodo(todo) : emptyDraft());
   set(bodyTab, 'write');
   openPopup({ kind: 'edit' });
+  void loadWorkspaceOptions();
 }
 
 function patchDraft(patch: Partial<TodoDraft>): void {
@@ -192,6 +195,26 @@ async function removeTodo(id: string): Promise<void> {
   }
 }
 
+async function loadWorkspaceOptions(): Promise<void> {
+  set(workspaceOpts, null);
+  try {
+    set(workspaceOpts, await plugin.request('workspace.options'));
+  } catch {
+    set(workspaceOpts, { available: false, workspaces: [], currentId: null });
+  }
+}
+
+async function openWorkspace(id: string): Promise<void> {
+  try {
+    const { flash: result } = await plugin.request('workspace.open', { id });
+    if (result) {
+      showFlash(result);
+    }
+  } catch (err) {
+    showFlash({ tone: 'danger', text: errorText(err) });
+  }
+}
+
 async function testNotify(id: string): Promise<void> {
   try {
     showFlash((await plugin.request('todo.testNotify', { id })).flash);
@@ -214,6 +237,25 @@ function TintButton(props: { tone: Tone; icon: IconName; disabled?: boolean; onP
 }
 
 /** 區塊外框：Card 沒有邊線參數、在側邊欄裡太淡，改用 Box 畫有色邊線。 */
+function workspaceText(workspace: TodoWorkspace): string {
+  return workspace.branch && workspace.branch !== workspace.name ? `${workspace.name} · ${workspace.branch}` : workspace.name;
+}
+
+/** 顯示 todo 指定的工作區，按下切過去 */
+function WorkspaceButton({ workspace }: { workspace: TodoWorkspace }) {
+  return (
+    <Button
+      size="xs"
+      variant="ghost"
+      icon={workspace.kind === 'folder' ? 'folder' : 'branch'}
+      tooltip={msgs().workspaceJumpTooltip(workspace.name)}
+      onPress={() => openWorkspace(workspace.id)}
+    >
+      {workspaceText(workspace)}
+    </Button>
+  );
+}
+
 function Section({ title, tone = 'accent', children }: { title?: string; tone?: Tone; children?: OrcaNode }) {
   return (
     <Box border={tone} radius="lg" padding="md" background="card" gap="sm">
@@ -443,22 +485,43 @@ function Group({ status, todos, now }: { status: TodoStatus; todos: Todo[]; now:
       </Text>
     );
   }
+  // List 只能放 ListItem，ListItem 整列又是按鈕：有工作區的項目切成獨立一段，工作區按鈕接在下方
+  const segments: { items: Todo[]; workspace: TodoWorkspace | null }[] = [];
+  for (const todo of sortGroup(todos, status, now)) {
+    const last = segments[segments.length - 1];
+    if (!todo.workspace && last && !last.workspace) {
+      last.items.push(todo);
+    } else {
+      segments.push({ items: [todo], workspace: todo.workspace ?? null });
+    }
+  }
   return (
     <Box border={STATUS_TONE[status]} radius="md" padding="xs">
-      <List label={label}>
-        {sortGroup(todos, status, now).map((todo) => {
-          const line = itemLine(todo, now);
-          return (
-            <ListItem
-              title={todo.title}
-              description={line.description}
-              icon={line.icon}
-              current={line.icon === 'play'}
-              onPress={() => openPopup({ kind: 'detail', id: todo.id })}
-            />
-          );
-        })}
-      </List>
+      <Stack gap="none">
+        {segments.map((segment) => (
+          <Stack gap="none">
+            <List label={label}>
+              {segment.items.map((todo) => {
+                const line = itemLine(todo, now);
+                return (
+                  <ListItem
+                    title={todo.title}
+                    description={line.description}
+                    icon={line.icon}
+                    current={line.icon === 'play'}
+                    onPress={() => openPopup({ kind: 'detail', id: todo.id })}
+                  />
+                );
+              })}
+            </List>
+            {segment.workspace ? (
+              <Row justify="end">
+                <WorkspaceButton workspace={segment.workspace} />
+              </Row>
+            ) : null}
+          </Stack>
+        ))}
+      </Stack>
     </Box>
   );
 }
@@ -591,6 +654,11 @@ function DetailView({ todo }: { todo: Todo }) {
         {live ? <Badge tone="warning">{m.badgeOngoing}</Badge> : null}
         {todo.notify && todo.startAt !== null ? <Badge tone="accent">{m.badgeNotify}</Badge> : null}
       </Row>
+      {todo.workspace ? (
+        <Row>
+          <WorkspaceButton workspace={todo.workspace} />
+        </Row>
+      ) : null}
       {live ? (
         <Callout tone="warning" icon="play" title={m.ongoingCallout(formatDuration(todo.durationMin, lang))}>
           <Text size="sm">{`${formatClock(live.start)} – ${formatClock(live.end)}`}</Text>
@@ -743,7 +811,53 @@ function EditView({ state }: { state: ViewState }) {
           onChange={(v) => patchDraft({ status: v as TodoStatus })}
         />
       </Section>
+
+      <Section title={m.workspaceSection}>
+        <WorkspaceField draftId={d.workspaceId} existing={existing?.workspace ?? null} />
+      </Section>
     </PopupFrame>
+  );
+}
+
+/** Select 的選項值不能是空字串，「不指定」用這個代替 */
+const NO_WORKSPACE = 'none';
+
+/** existing＝這筆存著的工作區：已不在清單上時仍列為選項，存檔不會被默默清掉 */
+function WorkspaceField({ draftId, existing }: { draftId: string; existing: TodoWorkspace | null }) {
+  const m = msgs();
+  const opts = read(workspaceOpts);
+  if (!opts) {
+    return <Spinner label={m.workspaceLoading} />;
+  }
+  if (!opts.available) {
+    return (
+      <Text size="xs" muted>
+        {m.workspaceUnavailable}
+      </Text>
+    );
+  }
+  const options = [{ value: NO_WORKSPACE, label: m.workspaceNone }, ...opts.workspaces.map((w) => ({ value: w.id, label: m.workspaceOption(w.name, w.branch) }))];
+  if (existing && !opts.workspaces.some((w) => w.id === existing.id)) {
+    options.push({ value: existing.id, label: m.workspaceUnlisted(existing.name) });
+  }
+  const current = opts.currentId;
+  return (
+    <Stack gap="sm">
+      <Select
+        label={m.workspaceLabel}
+        value={draftId || NO_WORKSPACE}
+        options={options}
+        onChange={(v) => patchDraft({ workspaceId: v === NO_WORKSPACE ? '' : v })}
+      />
+      <Actions>
+        <Button size="xs" variant="outline" icon="branch" disabled={!current} onPress={() => current && patchDraft({ workspaceId: current })}>
+          {m.workspaceUseCurrent}
+        </Button>
+      </Actions>
+      <Text size="xs" muted>
+        {current ? m.workspaceHint : m.workspaceNoCurrent}
+      </Text>
+    </Stack>
   );
 }
 

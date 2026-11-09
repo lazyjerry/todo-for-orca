@@ -1,8 +1,8 @@
 // panel 與 worker 的請求契約，兩邊共用。
 import type { Lang } from './core/i18n.ts';
-import type { Todo, TodoDraft, TodoStatus } from './core/types.ts';
+import type { Todo, TodoDraft, TodoStatus, TodoWorkspace } from './core/types.ts';
 
-export type { Repeat, RepeatEnd, RepeatUnit, Todo, TodoDraft, TodoStatus } from './core/types.ts';
+export type { Repeat, RepeatEnd, RepeatUnit, Todo, TodoDraft, TodoStatus, TodoWorkspace } from './core/types.ts';
 
 export interface ViewState {
   todos: Todo[];
@@ -18,6 +18,14 @@ export interface ActionResult {
   flash?: Flash;
 }
 
+/** 編輯頁的工作區選項；available＝這版 Orca 有 workspace.list 且已授權 */
+export interface WorkspaceOptions {
+  available: boolean;
+  workspaces: TodoWorkspace[];
+  /** 目前開啟的工作區；比對不到（或對到不只一個）時是 null */
+  currentId: string | null;
+}
+
 /** 批次刪除只允許這兩種狀態，啟用中的不會被誤刪。 */
 export type PurgeStatus = Exclude<TodoStatus, 'enabled'>;
 
@@ -30,6 +38,9 @@ declare module 'orca' {
     'todo.delete': { input: { id: string }; output: ActionResult };
     'todo.purge': { input: { statuses: PurgeStatus[] }; output: ActionResult };
     'todo.testNotify': { input: { id: string }; output: { flash: Flash } };
+    'workspace.options': { output: WorkspaceOptions };
+    /** 切到 todo 指定的工作區，跟點 Orca 側欄一樣 */
+    'workspace.open': { input: { id: string }; output: { flash?: Flash } };
     /** 面板開啟時回報 Orca 的介面語言，worker 的通知、狀態列與提示訊息跟著換 */
     'lang.set': { input: { lang: Lang }; output: { lang: Lang } };
   }

@@ -4,6 +4,7 @@ import { emptyDraft } from './core/draft.ts';
 import { formatDateTime } from './core/format.ts';
 import type { Todo } from './core/types.ts';
 import * as main from './worker.ts';
+import { matchCurrent } from './worker/workspaces.ts';
 
 const MIN = 60_000;
 
@@ -130,4 +131,77 @@ test('語言：面板回報英文後，狀態列與提示訊息改用英文，�
   assert.equal(bad.flash?.text, 'Title cannot be empty');
   assert.deepEqual(worker.refusals, []);
   await worker.deactivate();
+});
+
+const WORKSPACES = [
+  { id: 'w1', kind: 'worktree', name: 'todo-list', path: '/repo/todo-list', branch: 'main', hostId: null },
+  { id: 'w2', kind: 'worktree', name: 'feature-x', path: '/repo/feature-x', branch: 'feature-x', hostId: null },
+  { id: 'w3', kind: 'folder', name: 'notes', path: '/notes', branch: null, hostId: null },
+];
+
+function workspaceHost(storage?: Record<string, JsonValue>) {
+  return mockHost({
+    storage,
+    results: {
+      'workspace.list': { workspaces: WORKSPACES, truncated: false },
+      'workspace.readContext': { branch: 'feature-x', displayName: 'feature-x', terminals: [] },
+      'workspace.open': { opened: true },
+    },
+  });
+}
+
+test('工作區：選項列出全部並認出目前開啟的；存檔記下名稱與分支，按下切換呼叫 workspace.open', async () => {
+  const host = workspaceHost();
+  const worker = await mountWorker(main, { host });
+  const opts = await worker.request('workspace.options');
+  assert.equal(opts.available, true);
+  assert.equal(opts.workspaces.length, 3);
+  assert.equal(opts.currentId, 'w2');
+
+  const result = await worker.request('todo.save', { ...emptyDraft(), title: '修 bug', workspaceId: 'w2' });
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), result);
+  const saved = result.state.todos.find((t) => t.id === result.savedId);
+  assert.deepEqual(saved?.workspace, { id: 'w2', kind: 'worktree', name: 'feature-x', branch: 'feature-x' });
+
+  const none = await worker.request('todo.save', { ...emptyDraft(), title: '不指定' });
+  assert.equal(none.state.todos.find((t) => t.id === none.savedId)?.workspace, null);
+
+  const missing = await worker.request('todo.save', { ...emptyDraft(), title: '亂填', workspaceId: 'gone' });
+  assert.equal(missing.flash?.tone, 'danger');
+  assert.equal(missing.savedId, undefined);
+
+  const opened = await worker.request('workspace.open', { id: 'w2' });
+  assert.deepEqual(opened, {});
+  assert.deepEqual(host.callsOf('workspace.open'), [{ workspaceId: 'w2' }]);
+  assert.deepEqual(worker.refusals, []);
+  await worker.deactivate();
+});
+
+test('工作區：已不在清單上的工作區，編輯時沒改就沿用存著的快照', async () => {
+  const gone = { id: 'old', kind: 'worktree', name: 'removed-tree', branch: 'old-branch' };
+  const host = workspaceHost(stored([{ title: '舊的', workspace: gone as Todo['workspace'] }]));
+  const worker = await mountWorker(main, { host });
+  const result = await worker.request('todo.save', { ...emptyDraft(), id: 't0', title: '舊的改名', workspaceId: 'old' });
+  assert.equal(result.flash?.tone, 'success');
+  assert.deepEqual(result.state.todos[0]?.workspace, gone);
+  await worker.deactivate();
+});
+
+test('工作區：沒有授權 workspace 權限時，選項標成不可用，切換回提示而不是丟錯', async () => {
+  const host = mockHost({ capabilities: ['storage:own', 'notifications:show'] });
+  const worker = await mountWorker(main, { host });
+  const opts = await worker.request('workspace.options');
+  assert.equal(opts.available, false);
+  const opened = await worker.request('workspace.open', { id: 'w1' });
+  assert.ok(opened.flash);
+  await worker.deactivate();
+});
+
+test('工作區：目前工作區的顯示名稱對不到時，退回用唯一的分支比對；分支重複就不猜', () => {
+  const list = WORKSPACES.map(({ id, kind, name, branch }) => ({ id, kind: kind as 'worktree' | 'folder', name, branch }));
+  assert.equal(matchCurrent(list, { branch: 'main', displayName: 'todo-list', terminals: [] } as never), 'w1');
+  assert.equal(matchCurrent(list, { branch: 'feature-x', displayName: '改過的名字' } as never), 'w2');
+  const dup = [...list, { id: 'w4', kind: 'worktree' as const, name: 'other-repo', branch: 'main' }];
+  assert.equal(matchCurrent(dup, { branch: 'main', displayName: '改過的名字' } as never), null);
+  assert.equal(matchCurrent(list, null), null);
 });

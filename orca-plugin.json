@@ -35,6 +35,8 @@
   },
   "capabilities": [
     { "kind": "storage:own" },
-    { "kind": "notifications:show" }
+    { "kind": "notifications:show" },
+    { "kind": "workspace:read" },
+    { "kind": "workspace:write" }
   ]
 }
