@@ -136,3 +136,38 @@ test('英文介面：Orca 不是中文時顯示英文，並把語言回報給 wo
   assert.deepEqual(view.errors, []);
   await view.unmount();
 });
+
+test('列表底部快速新增：只送標題，存好跳到該筆的編輯頁', async () => {
+  const calls: { name: string; input: unknown }[] = [];
+  const view = await mount(panel, { host: host(calls), locale: 'zh-TW' });
+  await view.type({ label: '快速新增標題' }, '買牛奶');
+  await view.press({ type: 'Button', text: '新增' });
+  const sent = calls[0]?.input as Record<string, unknown>;
+  assert.equal(calls[0]?.name, 'todo.save');
+  assert.equal(sent.title, '買牛奶');
+  assert.equal('id' in sent, false);
+  assert.ok(view.find({ text: '編輯 Todo' }));
+  assert.ok(view.find({ type: 'Button', text: '儲存' }));
+  assert.deepEqual(view.errors, []);
+  await view.unmount();
+});
+
+test('持續時間快速按鈕：一個時辰填 120 分、整天填 480 分', async () => {
+  const calls: { name: string; input: unknown }[] = [];
+  const view = await mount(panel, { host: host(calls), locale: 'zh-TW' });
+  await view.press({ type: 'IconButton', label: '新增 Todo' });
+  await view.type({ label: '標題' }, '專注');
+  await view.press({ type: 'Button', text: '一個時辰' });
+  await view.press({ type: 'Button', text: '儲存' });
+  assert.equal((calls[0]?.input as Record<string, unknown>).duration, '120');
+  await view.unmount();
+
+  const calls2: { name: string; input: unknown }[] = [];
+  const view2 = await mount(panel, { host: host(calls2), locale: 'zh-TW' });
+  await view2.press({ type: 'IconButton', label: '新增 Todo' });
+  await view2.type({ label: '標題' }, '整天的事');
+  await view2.press({ type: 'Button', text: '整天' });
+  await view2.press({ type: 'Button', text: '儲存' });
+  assert.equal((calls2[0]?.input as Record<string, unknown>).duration, '480');
+  await view2.unmount();
+});

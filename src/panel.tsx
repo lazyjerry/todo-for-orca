@@ -51,6 +51,7 @@ const busy = atom(false);
 const popup = atom<Popup | null>(null);
 const draft = atom<TodoDraft>(emptyDraft());
 const confirmDelete = atom(false);
+const quickTitle = atom('');
 const bodyTab = atom('write');
 /** 清單只顯示一種狀態；不持久化，重開面板回到預設的「啟用」。 */
 const statusFilter = atom<TodoStatus>('enabled');
@@ -60,6 +61,8 @@ const STATUS_ORDER: TodoStatus[] = ['enabled', 'disabled', 'done'];
 /** 狀態的代表色：清單外框、徽章共用，讓三組一眼分得開。 */
 const STATUS_TONE: Record<TodoStatus, Tone> = { enabled: 'accent', disabled: 'warning', done: 'success' };
 const FLASH_TIMEOUT_MS = 4000;
+/** 持續時間快速按鈕（分鐘），順序對應 i18n 的 durationPresets */
+const DURATION_PRESETS = [15, 30, 120, 480] as const;
 
 /** Orca 的介面語言：zh 開頭用繁中，其他用英文。在 render 時讀，語言切換後重畫就會跟著換。 */
 function panelLang(): Lang {
@@ -151,6 +154,25 @@ async function saveDraft(): Promise<void> {
   });
   if (ok && savedId) {
     openPopup({ kind: 'detail', id: savedId });
+  }
+}
+
+/** 列表底部快速新增：只帶標題、其餘用預設值存檔，存好直接進該筆的編輯頁補其他欄位。 */
+async function quickAdd(): Promise<void> {
+  const title = read(quickTitle).trim();
+  if (!title || read(busy)) {
+    return;
+  }
+  let savedId: string | undefined;
+  const ok = await act(async () => {
+    const result = await plugin.request('todo.save', { ...emptyDraft(), title });
+    savedId = result.savedId;
+    return result;
+  });
+  const saved = ok && savedId ? read(view)?.todos.find((t) => t.id === savedId) : undefined;
+  if (saved) {
+    set(quickTitle, '');
+    openEditor(saved);
   }
 }
 
@@ -443,7 +465,35 @@ function MainView({ state }: { state: ViewState }) {
           ) : null}
         </Stack>
       </Box>
+      <QuickAdd />
       <FlashBar />
+    </Box>
+  );
+}
+
+function QuickAdd() {
+  const m = msgs();
+  const empty = read(quickTitle).trim() === '';
+  return (
+    <Box gap="sm" shrink={false}>
+      <Separator />
+      <Row align="center" gap="xs">
+        <Box grow>
+          <Input
+            label={m.quickAddLabel}
+            labelHidden
+            value={read(quickTitle)}
+            maxLength={TITLE_MAX}
+            placeholder={m.quickAddPlaceholder}
+            disabled={read(busy)}
+            onChange={(v) => set(quickTitle, v)}
+            onSubmit={() => quickAdd()}
+          />
+        </Box>
+        <Button size="xs" variant="solid" tone="accent" icon="add" disabled={read(busy) || empty} onPress={quickAdd}>
+          {m.quickAddSubmit}
+        </Button>
+      </Row>
     </Box>
   );
 }
@@ -588,6 +638,13 @@ function EditView({ state }: { state: ViewState }) {
           </Button>
         </Actions>
         <Input label={m.durationInputLabel} value={d.duration} placeholder={m.durationPlaceholder} onChange={(v) => patchDraft({ duration: v })} />
+        <Actions>
+          {DURATION_PRESETS.map((minutes, i) => (
+            <Button size="xs" variant="outline" tooltip={m.durationPresetTooltip(minutes)} onPress={() => patchDraft({ duration: String(minutes) })}>
+              {m.durationPresets[i]}
+            </Button>
+          ))}
+        </Actions>
         <Text size="xs" muted>
           {m.durationHint}
         </Text>

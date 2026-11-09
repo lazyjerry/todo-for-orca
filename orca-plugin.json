@@ -1,9 +1,9 @@
 {
   "manifestVersion": 2,
   "id": "todo-list",
-  "name": "Todo List",
+  "name": "Daily To-Do List",
   "version": "0.1.0",
-  "description": "A todo list in the sidebar with timed desktop reminders (repeat, stop conditions, duration) and the current / next todo in the status bar. 側欄 todo 清單：定時桌面通知（重複、停止條件、持續時間），狀態列顯示進行中與下一個 todo。",
+  "description": "A sidebar to-do list for the small tasks of your day: timed desktop reminders, repeats and durations, with the current and next to-do in the status bar. 處理一天內小任務的側欄待辦清單：到點桌面提醒、可重複與設定持續時間，狀態列顯示進行中與下一件事。",
   "license": "Apache-2.0",
   "author": {
     "name": "LazyJerry",
@@ -19,14 +19,14 @@
     "panels": [
       {
         "id": "todo-list",
-        "title": "Todo List",
+        "title": "Daily To-Do List",
         "icon": "calendar",
         "entry": "src/panel.tsx",
         "ui": "components"
       }
     ],
     "commands": [
-      { "id": "todo-list.showStatus", "title": "Todo List: Show Current and Next Todo" }
+      { "id": "todo-list.showStatus", "title": "Daily To-Do List: Show Current and Next To-Do" }
     ],
     "statusBarItems": [
       { "id": "now", "icon": "play", "tone": "warning", "tooltip": "Todo in progress", "command": "todo-list.showStatus" },
