@@ -88,6 +88,20 @@ test('點項目開整頁 popup 顯示 Markdown 內容；刪除要先確認', asy
   await view.unmount();
 });
 
+test('內容頁停用要先確認；取消不送出，確定才改狀態', async () => {
+  const calls: { name: string; input: unknown }[] = [];
+  const view = await mount(panel, { host: host(calls), locale: 'zh-TW' });
+  await view.press({ type: 'ListItem', label: '專注時段' });
+  await view.press({ text: '停用' });
+  assert.ok(view.find({ type: 'Callout', label: '確定停用「專注時段」？' }));
+  await view.press({ text: '取消' });
+  assert.equal(view.find({ text: '確定停用' }), null);
+  await view.press({ text: '停用' });
+  await view.press({ text: '確定停用' });
+  assert.deepEqual(calls, [{ name: 'todo.setStatus', input: { id: 'live', status: 'disabled' } }]);
+  await view.unmount();
+});
+
 test('新增：填表後儲存送出草稿，存好跳到該筆的內容頁', async () => {
   const calls: { name: string; input: unknown }[] = [];
   const view = await mount(panel, { host: host(calls), locale: 'zh-TW' });

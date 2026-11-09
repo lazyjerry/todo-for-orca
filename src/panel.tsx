@@ -38,6 +38,7 @@ import {
 } from 'orca';
 import { BODY_MAX, draftFromTodo, emptyDraft, TITLE_MAX } from './core/draft.ts';
 import { describeRepeat, formatClock, formatDateTime, formatDuration, formatShort } from './core/format.ts';
+import { assistMarkdown } from './core/markdown.ts';
 import { type Lang, type Messages, messages, pickLang } from './core/i18n.ts';
 import { highlights, nextAfter, ongoingAt } from './core/schedule.ts';
 import type { RepeatUnit, Todo, TodoDraft, TodoStatus } from './core/types.ts';
@@ -51,6 +52,9 @@ const busy = atom(false);
 const popup = atom<Popup | null>(null);
 const draft = atom<TodoDraft>(emptyDraft());
 const confirmDelete = atom(false);
+/** 內容頁按了啟用／停用、等待確認的目標狀態 */
+const confirmStatus = atom<ConfirmableStatus | null>(null);
+type ConfirmableStatus = Exclude<TodoStatus, 'done'>;
 const quickTitle = atom('');
 const bodyTab = atom('write');
 /** 清單只顯示一種狀態；不持久化，重開面板回到預設的「啟用」。 */
@@ -127,11 +131,13 @@ export function setup(ctx: PanelContext): void {
 
 function openPopup(next: Popup): void {
   set(confirmDelete, false);
+  set(confirmStatus, null);
   set(popup, next);
 }
 
 function closePopup(): void {
   set(confirmDelete, false);
+  set(confirmStatus, null);
   set(popup, null);
 }
 
@@ -289,6 +295,41 @@ function ConfirmDelete({ title, onConfirm }: { title: string; onConfirm: () => u
           <Button size="xs" variant="solid" tone="danger" icon="delete" disabled={read(busy)} onPress={onConfirm}>
             {m.confirmDelete}
           </Button>
+        </Actions>
+      </Stack>
+    </Callout>
+  );
+}
+
+/** 刪除與啟用／停用的確認同時只顯示一個 */
+function askDelete(): void {
+  set(confirmStatus, null);
+  set(confirmDelete, true);
+}
+
+function askStatus(status: ConfirmableStatus): void {
+  set(confirmDelete, false);
+  set(confirmStatus, status);
+}
+
+function ConfirmStatus({ todo, status }: { todo: Todo; status: ConfirmableStatus }) {
+  const m = msgs();
+  const confirm = async () => {
+    if (await setStatus(todo.id, status)) {
+      set(confirmStatus, null);
+    }
+  };
+  return (
+    <Callout tone={status === 'enabled' ? 'success' : 'warning'} title={m.confirmStatusTitle[status](todo.title)}>
+      <Stack gap="sm">
+        <Text size="sm">{m.confirmStatusNote[status]}</Text>
+        <Actions>
+          <Button size="xs" variant="outline" icon="close" onPress={() => set(confirmStatus, null)}>
+            {m.cancel}
+          </Button>
+          <TintButton tone={status === 'enabled' ? 'success' : 'warning'} icon={status === 'enabled' ? 'play' : 'pause'} disabled={read(busy)} onPress={confirm}>
+            {m.confirmStatusAction[status]}
+          </TintButton>
         </Actions>
       </Stack>
     </Callout>
@@ -510,7 +551,7 @@ function DetailView({ todo }: { todo: Todo }) {
   const footer = (
     <Stack gap="sm">
       <Row justify="end" align="center" gap="sm" wrap>
-        <Button size="xs" variant="outline" tone="danger" icon="delete" disabled={disabled} onPress={() => set(confirmDelete, true)}>
+        <Button size="xs" variant="outline" tone="danger" icon="delete" disabled={disabled} onPress={askDelete}>
           {m.delete}
         </Button>
         <Row align="center" gap="xs">
@@ -520,11 +561,11 @@ function DetailView({ todo }: { todo: Todo }) {
             </TintButton>
           ) : null}
           {todo.status === 'enabled' ? (
-            <TintButton tone="warning" icon="pause" disabled={disabled} onPress={() => setStatus(todo.id, 'disabled')}>
+            <TintButton tone="warning" icon="pause" disabled={disabled} onPress={() => askStatus('disabled')}>
               {m.disable}
             </TintButton>
           ) : (
-            <TintButton tone="success" icon="play" disabled={disabled} onPress={() => setStatus(todo.id, 'enabled')}>
+            <TintButton tone="success" icon="play" disabled={disabled} onPress={() => askStatus('enabled')}>
               {m.enable}
             </TintButton>
           )}
@@ -539,6 +580,7 @@ function DetailView({ todo }: { todo: Todo }) {
         </Row>
       </Row>
       {read(confirmDelete) ? <ConfirmDelete title={todo.title} onConfirm={() => removeTodo(todo.id)} /> : null}
+      {read(confirmStatus) ? <ConfirmStatus todo={todo} status={read(confirmStatus)!} /> : null}
     </Stack>
   );
   return (
@@ -613,21 +655,28 @@ function EditView({ state }: { state: ViewState }) {
     <PopupFrame title={existing ? m.editTitle : m.newTitle} footer={footer}>
       <Section title={m.basicSection}>
         <Input label={m.titleLabel} value={d.title} maxLength={TITLE_MAX} placeholder={m.titlePlaceholder} onChange={(v) => patchDraft({ title: v })} />
-        <Tabs label={m.bodySection} value={read(bodyTab)} onChange={(v) => set(bodyTab, v)}>
-          <Tab value="write" label={m.bodyWrite} icon="edit">
-            <Textarea
-              label={m.bodyLabel}
-              value={d.body}
-              rows={10}
-              maxLength={BODY_MAX}
-              placeholder={m.bodyPlaceholder}
-              onChange={(v) => patchDraft({ body: v })}
-            />
-          </Tab>
-          <Tab value="preview" label={m.bodyPreview} icon="file-text">
+        <Row justify="end" gap="xs">
+          <Button size="xs" variant={read(bodyTab) === 'write' ? 'outline' : 'ghost'} icon="edit" onPress={() => set(bodyTab, 'write')}>
+            {m.bodyWrite}
+          </Button>
+          <Button size="xs" variant={read(bodyTab) === 'preview' ? 'outline' : 'ghost'} icon="file-text" onPress={() => set(bodyTab, 'preview')}>
+            {m.bodyPreview}
+          </Button>
+        </Row>
+        {read(bodyTab) === 'write' ? (
+          <Textarea
+            label={m.bodyLabel}
+            value={d.body}
+            rows={10}
+            maxLength={BODY_MAX}
+            placeholder={m.bodyPlaceholder}
+            onChange={(v) => update(draft, (cur) => ({ ...cur, body: assistMarkdown(cur.body, v) }))}
+          />
+        ) : (
+          <Box border radius="md" padding="md" background="muted" minHeight={200}>
             {d.body.trim() ? <Markdown content={d.body} /> : <Text size="sm" muted>{m.noBody}</Text>}
-          </Tab>
-        </Tabs>
+          </Box>
+        )}
       </Section>
 
       <Section title={m.timeSection}>
