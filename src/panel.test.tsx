@@ -178,12 +178,12 @@ test('列表底部快速新增：只送標題，存好跳到該筆的編輯頁',
   await view.unmount();
 });
 
-test('持續時間快速按鈕：一個時辰填 120 分、整天填 480 分', async () => {
+test('持續時間快速按鈕：2 小時填 120 分、5 小時填 300 分、8 小時填 480 分', async () => {
   const calls: { name: string; input: unknown }[] = [];
   const view = await mount(panel, { host: host(calls), locale: 'zh-TW' });
   await view.press({ type: 'IconButton', label: '新增 Todo' });
   await view.type({ label: '標題' }, '專注');
-  await view.press({ type: 'Button', text: '一個時辰' });
+  await view.press({ type: 'Button', text: '2 小時' });
   await view.press({ type: 'Button', text: '儲存' });
   assert.equal((calls[0]?.input as Record<string, unknown>).duration, '120');
   await view.unmount();
@@ -192,10 +192,19 @@ test('持續時間快速按鈕：一個時辰填 120 分、整天填 480 分', a
   const view2 = await mount(panel, { host: host(calls2), locale: 'zh-TW' });
   await view2.press({ type: 'IconButton', label: '新增 Todo' });
   await view2.type({ label: '標題' }, '整天的事');
-  await view2.press({ type: 'Button', text: '整天' });
+  await view2.press({ type: 'Button', text: '8 小時' });
   await view2.press({ type: 'Button', text: '儲存' });
   assert.equal((calls2[0]?.input as Record<string, unknown>).duration, '480');
   await view2.unmount();
+
+  const calls3: { name: string; input: unknown }[] = [];
+  const view3 = await mount(panel, { host: host(calls3), locale: 'zh-TW' });
+  await view3.press({ type: 'IconButton', label: '新增 Todo' });
+  await view3.type({ label: '標題' }, '半天的事');
+  await view3.press({ type: 'Button', text: '5 小時' });
+  await view3.press({ type: 'Button', text: '儲存' });
+  assert.equal((calls3[0]?.input as Record<string, unknown>).duration, '300');
+  await view3.unmount();
 });
 
 test('工作區：清單與內容頁顯示指定的工作區，按下切換；編輯頁可改成目前工作區', async () => {
@@ -216,5 +225,32 @@ test('工作區：清單與內容頁顯示指定的工作區，按下切換；�
   assert.equal((save?.input as Record<string, unknown>).workspaceId, 'w1');
   assert.deepEqual(view.errors, []);
   assert.deepEqual(view.refusals, []);
+  await view.unmount();
+});
+
+test('開始時間日曆：選日期、時、分改寫開始時間，可換月，再按一次收起', async () => {
+  const calls: { name: string; input: unknown }[] = [];
+  const view = await mount(panel, { host: host(calls), locale: 'zh-TW' });
+  await view.press({ type: 'IconButton', label: '新增 Todo' });
+  await view.type({ label: '標題' }, '看牙醫');
+  await view.type({ label: '開始時間' }, '2026-11-12 20:00');
+  await view.press({ type: 'Button', text: '選擇日期時間' });
+  assert.ok(view.find({ text: '2026 年 11 月' }));
+  assert.equal(view.valueOf({ label: '時' }), '20');
+  await view.press({ type: 'Button', text: '15' });
+  assert.equal(view.valueOf({ label: '開始時間' }), '2026-11-15 20:00');
+  await view.select({ label: '時' }, '9');
+  await view.select({ label: '分' }, '30');
+  assert.equal(view.valueOf({ label: '開始時間' }), '2026-11-15 09:30');
+  await view.press({ type: 'Button', text: '下個月 ›' });
+  assert.ok(view.find({ text: '2026 年 12 月' }));
+  await view.press({ type: 'Button', text: '1' });
+  assert.equal(view.valueOf({ label: '開始時間' }), '2026-12-01 09:30');
+  await view.press({ type: 'Button', text: '收起日曆' });
+  assert.equal(view.find({ label: '時' }), null);
+  await view.press({ type: 'Button', text: '儲存' });
+  assert.equal((calls[0]?.input as Record<string, unknown>).start, '2026-12-01 09:30');
+  assert.deepEqual(view.errors, []);
+  assert.deepEqual(view.warnings, []);
   await view.unmount();
 });

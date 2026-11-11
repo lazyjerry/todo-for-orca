@@ -36,7 +36,8 @@ import {
   type PanelContext,
   type Tone,
 } from 'orca';
-import { BODY_MAX, draftFromTodo, emptyDraft, TITLE_MAX } from './core/draft.ts';
+import { BODY_MAX, draftFromTodo, emptyDraft, parseLocalDateTime, TITLE_MAX } from './core/draft.ts';
+import { monthWeeks, sameDay, shiftMonth, withDate, withTime, yearMonthOf, type YearMonth } from './core/calendar.ts';
 import { describeRepeat, formatClock, formatDateTime, formatDuration, formatShort } from './core/format.ts';
 import { assistMarkdown } from './core/markdown.ts';
 import { type Lang, type Messages, messages, pickLang } from './core/i18n.ts';
@@ -62,13 +63,15 @@ const statusFilter = atom<TodoStatus>('enabled');
 const purgeChoice = atom<Record<PurgeStatus, boolean>>({ done: true, disabled: false });
 /** 編輯頁的工作區下拉選單；每次開編輯頁重抓，null＝載入中 */
 const workspaceOpts = atom<WorkspaceOptions | null>(null);
+/** 編輯頁開始時間的日曆：null＝收起，否則是正在看的月份 */
+const startPicker = atom<YearMonth | null>(null);
 
 const STATUS_ORDER: TodoStatus[] = ['enabled', 'disabled', 'done'];
 /** 狀態的代表色：清單外框、徽章共用，讓三組一眼分得開。 */
 const STATUS_TONE: Record<TodoStatus, Tone> = { enabled: 'accent', disabled: 'warning', done: 'success' };
 const FLASH_TIMEOUT_MS = 4000;
 /** 持續時間快速按鈕（分鐘），順序對應 i18n 的 durationPresets */
-const DURATION_PRESETS = [15, 30, 120, 480] as const;
+const DURATION_PRESETS = [15, 30, 120, 300, 480] as const;
 
 /** Orca 的介面語言：zh 開頭用繁中，其他用英文。在 render 時讀，語言切換後重畫就會跟著換。 */
 function panelLang(): Lang {
@@ -146,6 +149,7 @@ function closePopup(): void {
 function openEditor(todo?: Todo): void {
   set(draft, todo ? draftFromTodo(todo) : emptyDraft());
   set(bodyTab, 'write');
+  set(startPicker, null);
   openPopup({ kind: 'edit' });
   void loadWorkspaceOptions();
 }
@@ -692,7 +696,101 @@ function repeatOptions(m: Messages): { value: RepeatUnit | 'none'; label: string
 
 /** 帶入的時間取下一個整分鐘：存檔當下以前的場次不會通知，取整後馬上存仍趕得上。 */
 function nextMinute(): string {
-  return formatDateTime(Math.ceil((Date.now() + 1) / 60_000) * 60_000);
+  return formatDateTime(nextMinuteMs());
+}
+
+function nextMinuteMs(): number {
+  return Math.ceil((Date.now() + 1) / 60_000) * 60_000;
+}
+
+const pad2 = (n: number) => String(n).padStart(2, '0');
+const HOUR_OPTIONS = Array.from({ length: 24 }, (_, h) => ({ value: String(h), label: pad2(h) }));
+
+/** 分鐘選項每 5 分一格；手打的值不在格上時也列進去，下拉才顯示得出目前值 */
+function minuteOptions(current: number | null): { value: string; label: string }[] {
+  const mins = Array.from({ length: 12 }, (_, i) => i * 5);
+  if (current !== null && current % 5 !== 0) {
+    mins.push(current);
+    mins.sort((a, b) => a - b);
+  }
+  return mins.map((mi) => ({ value: String(mi), label: pad2(mi) }));
+}
+
+/**
+ * 開始時間的日曆與時、分選單：按下就改寫 draft.start，欄位仍可手打，驗證照舊走 parseDraft。
+ * 欄位空白或打錯時，選日期沿用「下一個整分鐘」的時間、選時分沿用今天。
+ */
+function StartPicker({ ym, start }: { ym: YearMonth; start: string }) {
+  const m = msgs();
+  const picked = parseLocalDateTime(start);
+  const base = picked ?? nextMinuteMs();
+  const now = Date.now();
+  const setStart = (ms: number) => patchDraft({ start: formatDateTime(ms) });
+  const pickedHour = picked === null ? undefined : String(new Date(picked).getHours());
+  const pickedMinute = picked === null ? null : new Date(picked).getMinutes();
+  return (
+    <Box border radius="md" padding="sm" gap="xs">
+      <Row justify="between" align="center">
+        <Button size="xs" variant="ghost" onPress={() => set(startPicker, shiftMonth(ym, -1))}>
+          {`‹ ${m.prevMonth}`}
+        </Button>
+        <Text size="sm" weight="medium">
+          {m.monthTitle(ym.year, ym.month)}
+        </Text>
+        <Button size="xs" variant="ghost" onPress={() => set(startPicker, shiftMonth(ym, 1))}>
+          {`${m.nextMonth} ›`}
+        </Button>
+      </Row>
+      {/* Box columns 最多 6 欄，改用一週一列、每格 grow＋width 0 平分寬度 */}
+      <Box direction="row" gap="xs">
+        {m.weekdays.map((w) => (
+          <Box grow width={0} align="center">
+            <Text size="xs" muted>
+              {w}
+            </Text>
+          </Box>
+        ))}
+      </Box>
+      {monthWeeks(ym).map((week) => (
+        <Box direction="row" gap="xs">
+          {week.map((day) => {
+            if (day === null) {
+              return <Box grow width={0} />;
+            }
+            const selected = picked !== null && sameDay(picked, ym, day);
+            return (
+              <Box grow width={0} align="stretch">
+                <Button
+                  size="xs"
+                  variant={selected ? 'solid' : sameDay(now, ym, day) ? 'outline' : 'ghost'}
+                  tone={selected ? 'accent' : 'neutral'}
+                  onPress={() => setStart(withDate(base, ym, day))}
+                >
+                  {String(day)}
+                </Button>
+              </Box>
+            );
+          })}
+        </Box>
+      ))}
+      <Box columns={2} gap="sm">
+        <Select
+          label={m.hourLabel}
+          value={pickedHour}
+          placeholder="--"
+          options={HOUR_OPTIONS}
+          onChange={(v) => setStart(withTime(base, Number(v), new Date(base).getMinutes()))}
+        />
+        <Select
+          label={m.minuteLabel}
+          value={pickedMinute === null ? undefined : String(pickedMinute)}
+          placeholder="--"
+          options={minuteOptions(pickedMinute)}
+          onChange={(v) => setStart(withTime(base, new Date(base).getHours(), Number(v)))}
+        />
+      </Box>
+    </Box>
+  );
 }
 
 function EditView({ state }: { state: ViewState }) {
@@ -700,6 +798,7 @@ function EditView({ state }: { state: ViewState }) {
   const disabled = read(busy);
   const existing = d.id ? state.todos.find((t) => t.id === d.id) : undefined;
   const hasStart = d.start.trim().length > 0;
+  const picker = read(startPicker);
   const m = msgs();
   const footer = (
     <Stack gap="xs">
@@ -753,7 +852,16 @@ function EditView({ state }: { state: ViewState }) {
           <Button size="xs" variant="outline" icon="calendar" onPress={() => patchDraft({ start: nextMinute() })}>
             {m.fillNow}
           </Button>
+          <Button
+            size="xs"
+            variant={picker ? 'solid' : 'outline'}
+            icon={picker ? 'collapse' : 'expand'}
+            onPress={() => set(startPicker, picker ? null : yearMonthOf(parseLocalDateTime(d.start) ?? Date.now()))}
+          >
+            {picker ? m.pickerClose : m.pickerOpen}
+          </Button>
         </Actions>
+        {picker ? <StartPicker ym={picker} start={d.start} /> : null}
         <Input label={m.durationInputLabel} value={d.duration} placeholder={m.durationPlaceholder} onChange={(v) => patchDraft({ duration: v })} />
         <Actions>
           {DURATION_PRESETS.map((minutes, i) => (
