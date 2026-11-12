@@ -30,8 +30,10 @@ export interface Todo {
   durationMin: number;
   repeat: Repeat | null;
   notify: boolean;
-  /** 指定的 Orca 工作區（worktree 或資料夾）；舊資料沒有這個欄位，視同 null */
+  /** 舊版指定的單一工作區；仍照舊顯示與切換，存檔時一律清成 null、改存 project */
   workspace?: TodoWorkspace | null;
+  /** 指定的 Orca 專案；開啟時再挑要切到哪一個工作樹。舊資料沒有這個欄位，視同 null */
+  project?: TodoProject | null;
   /** worker 已處理到的時間點：早於等於它的場次不再通知 */
   notifiedThrough: number;
   createdAt: number;
@@ -44,6 +46,16 @@ export interface TodoWorkspace {
   kind: 'worktree' | 'folder';
   name: string;
   branch: string | null;
+}
+
+/**
+ * 專案＝同一個 Git repo 的所有工作樹，或單一資料夾。key 由 worker 依工作樹的 .git 推出（見 worker/workspaces.ts），
+ * 存下指定當時的名稱：專案整個被移除後清單仍顯示得出來。
+ */
+export interface TodoProject {
+  key: string;
+  kind: 'repo' | 'folder';
+  name: string;
 }
 
 /** 表單欄位，全部是使用者輸入的原始字串；由 worker 驗證後轉成 Todo。 */
@@ -60,6 +72,6 @@ export interface TodoDraft {
   count: string;
   until: string;
   notify: boolean;
-  /** 空字串＝不指定工作區 */
-  workspaceId: string;
+  /** 空字串＝不指定專案 */
+  projectKey: string;
 }

@@ -21,7 +21,7 @@ export default defineCheck({
             startAt: now + 30 * MIN,
             durationMin: 15,
             repeat: { unit: 'day', every: 1, end: { kind: 'count', count: 5 } },
-            workspace: { id: 'w1', kind: 'worktree', name: 'todo-list', branch: 'feature-x' },
+            project: { key: 'repo:local:/repo/todo-list', kind: 'repo', name: 'todo-list' },
           },
           { ...base, id: 'c', title: '暫停的提醒', status: 'disabled', startAt: now + 60 * MIN },
           { ...base, id: 'd', title: '已完成的事', status: 'done', startAt: null },

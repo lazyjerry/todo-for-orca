@@ -4,11 +4,11 @@ import { randomUUID } from 'node:crypto';
 import type { OrcaWorkerApi } from 'orca/worker';
 import { parseDraft } from './core/draft.ts';
 import { type Lang, messages } from './core/i18n.ts';
-import type { Todo, TodoWorkspace } from './core/types.ts';
-import type { ActionResult, Flash, ViewState } from './protocol.ts';
+import type { Todo, TodoProject, TodoWorkspace } from './core/types.ts';
+import type { ActionResult, Flash, ProjectOption, ViewState } from './protocol.ts';
 import { type BarItem, dueReminders, scheduleSignature, statusBar, summaryText } from './worker/engine.ts';
 import { loadLang, loadTodos, saveLang, saveTodos } from './worker/store.ts';
-import { listWorkspaces, workspaceApiReady, workspaceOptions } from './worker/workspaces.ts';
+import { listProjects, projectOptions, workspaceApiReady } from './worker/workspaces.ts';
 
 const TICK_MS = 15_000;
 
@@ -118,20 +118,21 @@ export default function activate(orca: OrcaWorkerApi): void {
       const todos = await serial(() => loadTodos(orca));
       return { state: { todos }, flash: { tone: 'danger', text: parsed.error } };
     }
-    // 存下工作區當下的名稱與分支；查詢放在 serial 外，不卡住定時檢查
-    const listed = draft.workspaceId ? await findWorkspace(draft.workspaceId) : null;
+    // 存下專案當下的名稱；查詢放在 serial 外，不卡住定時檢查
+    const listed = draft.projectKey ? await findProject(draft.projectKey) : null;
     let savedId = '';
     const result = await mutation<null>((todos, _input, now) => {
       // 存檔當下以前的場次都不補發通知：改時間或新增時不會冒出一串舊提醒
       if (draft.id) {
         const existing = find(todos, draft.id);
         savedId = existing.id;
-        const workspace = pickWorkspace(draft.workspaceId, listed, existing);
-        const next: Todo = { ...existing, ...parsed.fields, workspace, notifiedThrough: now, updatedAt: now };
+        const project = pickProject(draft.projectKey, listed, existing);
+        // 舊版的單一工作區在編輯頁已換成所屬專案，存檔就清掉
+        const next: Todo = { ...existing, ...parsed.fields, workspace: null, project, notifiedThrough: now, updatedAt: now };
         return { todos: todos.map((t) => (t.id === existing.id ? next : t)), flash: { tone: 'success', text: msg().flashSaved(next.title) } };
       }
-      const workspace = pickWorkspace(draft.workspaceId, listed, undefined);
-      const created: Todo = { id: randomUUID(), ...parsed.fields, workspace, notifiedThrough: now, createdAt: now, updatedAt: now };
+      const project = pickProject(draft.projectKey, listed, undefined);
+      const created: Todo = { id: randomUUID(), ...parsed.fields, workspace: null, project, notifiedThrough: now, createdAt: now, updatedAt: now };
       savedId = created.id;
       return { todos: [...todos, created], flash: { tone: 'success', text: msg().flashCreated(created.title) } };
     })(null);
@@ -170,14 +171,9 @@ export default function activate(orca: OrcaWorkerApi): void {
     }),
   );
 
-  orca.panels.handle('todo.testNotify', async ({ id }): Promise<{ flash: Flash }> => {
-    const todos = await serial(() => loadTodos(orca));
-    const todo = todos.find((t) => t.id === id);
-    if (!todo) {
-      return { flash: { tone: 'danger', text: msg().errNotFound } };
-    }
+  orca.panels.handle('todo.testNotify', async (): Promise<{ flash: Flash }> => {
     try {
-      const { delivered } = await orca.host.call('notifications.show', { title: todo.title, body: msg().testBody });
+      const { delivered } = await orca.host.call('notifications.show', { title: msg().testTitle, body: msg().testBody });
       return {
         flash: delivered
           ? { tone: 'success', text: msg().testSent }
@@ -188,39 +184,51 @@ export default function activate(orca: OrcaWorkerApi): void {
     }
   });
 
-  /** 找不到或查詢失敗都回 null，交給 pickWorkspace 決定沿用舊的或報錯。 */
-  async function findWorkspace(id: string): Promise<TodoWorkspace | null> {
+  /** 找不到或查詢失敗都回 null，交給 pickProject 決定沿用舊的或報錯。 */
+  async function findProject(key: string): Promise<ProjectOption | null> {
     if (!workspaceApiReady(orca)) {
       return null;
     }
     try {
-      return (await listWorkspaces(orca)).find((w) => w.id === id) ?? null;
+      return (await listProjects(orca)).find((p) => p.key === key) ?? null;
     } catch (err) {
       orca.log(`workspace.list failed: ${errorText(err)}`);
       return null;
     }
   }
 
-  /** 沒改工作區時沿用存著的快照：工作區暫時列不出來（已移除、遠端主機離線）也能照常存檔。 */
-  function pickWorkspace(id: string, listed: TodoWorkspace | null, existing: Todo | undefined): TodoWorkspace | null {
-    if (!id) {
+  /** 沒改專案時沿用存著的快照：專案暫時列不出來（已移除、遠端主機離線）也能照常存檔。 */
+  function pickProject(key: string, listed: ProjectOption | null, existing: Todo | undefined): TodoProject | null {
+    if (!key) {
       return null;
     }
     if (listed) {
-      return listed;
+      return { key: listed.key, kind: listed.kind, name: listed.name };
     }
-    if (existing?.workspace?.id === id) {
-      return existing.workspace;
+    if (existing?.project?.key === key) {
+      return existing.project;
     }
-    throw new UserError(msg().errWorkspaceMissing);
+    throw new UserError(msg().errProjectMissing);
   }
 
-  orca.panels.handle('workspace.options', async () => {
+  orca.panels.handle('project.options', async () => {
     try {
-      return await workspaceOptions(orca);
+      return await projectOptions(orca);
     } catch (err) {
-      orca.log(`workspace options failed: ${errorText(err)}`);
-      return { available: false, workspaces: [], currentId: null };
+      orca.log(`project options failed: ${errorText(err)}`);
+      return { available: false, projects: [], currentKey: null };
+    }
+  });
+
+  orca.panels.handle('project.worktrees', async ({ key }): Promise<{ worktrees: TodoWorkspace[]; flash?: Flash }> => {
+    if (!workspaceApiReady(orca)) {
+      return { worktrees: [], flash: { tone: 'warning', text: msg().workspaceUnavailable } };
+    }
+    try {
+      const project = (await listProjects(orca)).find((p) => p.key === key);
+      return project ? { worktrees: project.worktrees } : { worktrees: [], flash: { tone: 'warning', text: msg().projectGone } };
+    } catch (err) {
+      return { worktrees: [], flash: { tone: 'danger', text: msg().workspaceOpenFailed(errorText(err)) } };
     }
   });
 

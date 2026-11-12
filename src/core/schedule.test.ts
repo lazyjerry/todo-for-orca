@@ -103,7 +103,7 @@ test('日期解析拒絕不存在的日期；草稿驗證擋下沒有開始時�
     count: '',
     until: '',
     notify: true,
-    workspaceId: '',
+    projectKey: '',
   };
   const result = parseDraft(base, 'zh');
   assert.equal(result.ok, false);
@@ -141,6 +141,6 @@ function emptyDraftLike() {
     count: '',
     until: '',
     notify: true,
-    workspaceId: '',
+    projectKey: '',
   };
 }

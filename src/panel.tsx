@@ -9,10 +9,10 @@ import {
   Checkbox,
   EmptyState,
   env,
+  Field,
   Heading,
   IconButton,
   Input,
-  KeyValue,
   List,
   ListItem,
   Markdown,
@@ -39,13 +39,18 @@ import {
 import { BODY_MAX, draftFromTodo, emptyDraft, parseLocalDateTime, TITLE_MAX } from './core/draft.ts';
 import { monthWeeks, sameDay, shiftMonth, withDate, withTime, yearMonthOf, type YearMonth } from './core/calendar.ts';
 import { describeRepeat, formatClock, formatDateTime, formatDuration, formatShort } from './core/format.ts';
-import { assistMarkdown } from './core/markdown.ts';
+import { assistMarkdown, markdownHeading } from './core/markdown.ts';
 import { type Lang, type Messages, messages, pickLang } from './core/i18n.ts';
 import { highlights, nextAfter, ongoingAt } from './core/schedule.ts';
-import type { RepeatUnit, Todo, TodoDraft, TodoStatus, TodoWorkspace } from './core/types.ts';
-import type { ActionResult, Flash, PurgeStatus, ViewState, WorkspaceOptions } from './protocol.ts';
+import type { RepeatUnit, Todo, TodoDraft, TodoProject, TodoStatus, TodoWorkspace } from './core/types.ts';
+import type { ActionResult, Flash, ProjectOption, ProjectOptions, PurgeStatus, ViewState } from './protocol.ts';
 
-type Popup = { kind: 'detail'; id: string } | { kind: 'edit' } | { kind: 'purge' };
+type Popup =
+  | { kind: 'detail'; id: string }
+  | { kind: 'edit' }
+  | { kind: 'purge' }
+  /** 開啟專案時挑工作樹；back＝挑完或按返回後回到哪一頁 */
+  | { kind: 'pick'; project: TodoProject; worktrees: TodoWorkspace[]; back: Popup | null };
 
 const view = atom<ViewState | null>(null);
 const flash = atom<Flash | null>(null);
@@ -61,10 +66,15 @@ const bodyTab = atom('write');
 /** 清單只顯示一種狀態；不持久化，重開面板回到預設的「啟用」。 */
 const statusFilter = atom<TodoStatus>('enabled');
 const purgeChoice = atom<Record<PurgeStatus, boolean>>({ done: true, disabled: false });
-/** 編輯頁的工作區下拉選單；每次開編輯頁重抓，null＝載入中 */
-const workspaceOpts = atom<WorkspaceOptions | null>(null);
-/** 編輯頁開始時間的日曆：null＝收起，否則是正在看的月份 */
-const startPicker = atom<YearMonth | null>(null);
+/** 編輯頁的專案下拉選單；每次開編輯頁重抓，null＝載入中 */
+const projectOpts = atom<ProjectOptions | null>(null);
+/** 編輯頁專案欄位打的字；有字就篩選清單 */
+const projectQuery = atom('');
+/** 沒打字時按展開鈕列出全部專案 */
+const projectBrowse = atom(false);
+type PickerField = 'start' | 'until';
+/** 編輯頁的日曆：null＝收起，否則是哪個欄位與正在看的月份；同時只開一個 */
+const dateTimePicker = atom<{ field: PickerField; ym: YearMonth } | null>(null);
 
 const STATUS_ORDER: TodoStatus[] = ['enabled', 'disabled', 'done'];
 /** 狀態的代表色：清單外框、徽章共用，讓三組一眼分得開。 */
@@ -149,24 +159,21 @@ function closePopup(): void {
 function openEditor(todo?: Todo): void {
   set(draft, todo ? draftFromTodo(todo) : emptyDraft());
   set(bodyTab, 'write');
-  set(startPicker, null);
+  set(dateTimePicker, null);
+  set(projectQuery, '');
+  set(projectBrowse, false);
   openPopup({ kind: 'edit' });
-  void loadWorkspaceOptions();
+  void loadProjectOptions(todo && !todo.project ? (todo.workspace ?? null) : null);
 }
 
 function patchDraft(patch: Partial<TodoDraft>): void {
   update(draft, (d) => ({ ...d, ...patch }));
 }
 
+/** 新增或編輯存好就回到清單 */
 async function saveDraft(): Promise<void> {
-  let savedId: string | undefined;
-  const ok = await act(async () => {
-    const result = await plugin.request('todo.save', read(draft));
-    savedId = result.savedId;
-    return result;
-  });
-  if (ok && savedId) {
-    openPopup({ kind: 'detail', id: savedId });
+  if (await act(() => plugin.request('todo.save', read(draft)))) {
+    closePopup();
   }
 }
 
@@ -199,12 +206,35 @@ async function removeTodo(id: string): Promise<void> {
   }
 }
 
-async function loadWorkspaceOptions(): Promise<void> {
-  set(workspaceOpts, null);
+/** legacy＝舊版只指定了工作區的 todo：載入後把下拉預設成該工作區所屬的專案 */
+async function loadProjectOptions(legacy: TodoWorkspace | null): Promise<void> {
+  set(projectOpts, null);
+  let opts: ProjectOptions;
   try {
-    set(workspaceOpts, await plugin.request('workspace.options'));
+    opts = await plugin.request('project.options');
   } catch {
-    set(workspaceOpts, { available: false, workspaces: [], currentId: null });
+    opts = { available: false, projects: [], currentKey: null };
+  }
+  const owner = legacy ? opts.projects.find((p) => p.worktrees.some((w) => w.id === legacy.id)) : undefined;
+  if (owner && read(draft).projectKey === '') {
+    patchDraft({ projectKey: owner.key });
+  }
+  set(projectOpts, opts);
+}
+
+/** 只有一個工作樹就直接開，多個才進挑選頁 */
+async function openProject(project: TodoProject): Promise<void> {
+  try {
+    const { worktrees, flash: result } = await plugin.request('project.worktrees', { key: project.key });
+    if (result) {
+      showFlash(result);
+    } else if (worktrees.length === 1) {
+      await openWorkspace(worktrees[0]!.id);
+    } else {
+      openPopup({ kind: 'pick', project, worktrees, back: read(popup) });
+    }
+  } catch (err) {
+    showFlash({ tone: 'danger', text: errorText(err) });
   }
 }
 
@@ -219,9 +249,9 @@ async function openWorkspace(id: string): Promise<void> {
   }
 }
 
-async function testNotify(id: string): Promise<void> {
+async function testNotify(): Promise<void> {
   try {
-    showFlash((await plugin.request('todo.testNotify', { id })).flash);
+    showFlash((await plugin.request('todo.testNotify')).flash);
   } catch (err) {
     showFlash({ tone: 'danger', text: errorText(err) });
   }
@@ -260,12 +290,69 @@ function WorkspaceButton({ workspace }: { workspace: TodoWorkspace }) {
   );
 }
 
+/** 顯示 todo 指定的專案，按下挑要開的工作樹 */
+function ProjectButton({ project }: { project: TodoProject }) {
+  return (
+    <Button
+      size="xs"
+      variant="ghost"
+      icon={project.kind === 'folder' ? 'folder' : 'branch'}
+      tooltip={msgs().projectJumpTooltip(project.name)}
+      onPress={() => openProject(project)}
+    >
+      {project.name}
+    </Button>
+  );
+}
+
+/** todo 指定的專案；舊版只存了工作區的，照舊顯示工作區按鈕 */
+function TodoLink({ todo }: { todo: Todo }) {
+  if (todo.project) {
+    return <ProjectButton project={todo.project} />;
+  }
+  return todo.workspace ? <WorkspaceButton workspace={todo.workspace} /> : null;
+}
+
+function hasLink(todo: Todo): boolean {
+  return Boolean(todo.project ?? todo.workspace);
+}
+
 function Section({ title, tone = 'accent', children }: { title?: string; tone?: Tone; children?: OrcaNode }) {
   return (
     <Box border={tone} radius="lg" padding="md" background="card" gap="sm">
       {title ? <Heading level={3}>{title}</Heading> : null}
       {children}
     </Box>
+  );
+}
+
+/** 內容頁時間條件的重點欄位：小標籤在上、大字的值在下 */
+function KeyFact({ label, value }: { label: string; value: string }) {
+  return (
+    <Stack gap="xs">
+      <Text size="xs" muted>
+        {label}
+      </Text>
+      <Text size="md" weight="semibold">
+        {value}
+      </Text>
+    </Stack>
+  );
+}
+
+/** 內容頁時間條件的附屬欄位：比 KeyValue 的 text-sm 再小一級 */
+function MinorFact({ label, value }: { label: string; value: string }) {
+  return (
+    <Row gap="sm" align="start">
+      <Box minWidth={56} shrink={false}>
+        <Text size="xs" muted>
+          {label}
+        </Text>
+      </Box>
+      <Box grow minWidth={0}>
+        <Text size="xs">{value}</Text>
+      </Box>
+    </Row>
   );
 }
 
@@ -296,7 +383,7 @@ function FlashBar() {
 }
 
 /** 整頁 popup 的骨架：上方標題列與返回鈕、中間捲動內容、下方固定動作列與訊息。 */
-function PopupFrame({ title, footer, children }: { title: string; footer?: OrcaNode; children?: OrcaNode }) {
+function PopupFrame({ title, footer, onBack = closePopup, children }: { title: string; footer?: OrcaNode; onBack?: () => unknown; children?: OrcaNode }) {
   const m = msgs();
   return (
     <Box height="100%" gap="md">
@@ -304,7 +391,7 @@ function PopupFrame({ title, footer, children }: { title: string; footer?: OrcaN
         <Box paddingY="xs">
           <Row align="center" gap="sm">
             {/* 圖示集合沒有返回箭頭，用文字箭頭 */}
-            <Button size="xs" variant="ghost" tooltip={m.backTooltip} onPress={closePopup}>
+            <Button size="xs" variant="ghost" tooltip={m.backTooltip} onPress={onBack}>
               {m.back}
             </Button>
             <Text size="sm" weight="semibold">
@@ -489,14 +576,14 @@ function Group({ status, todos, now }: { status: TodoStatus; todos: Todo[]; now:
       </Text>
     );
   }
-  // List 只能放 ListItem，ListItem 整列又是按鈕：有工作區的項目切成獨立一段，工作區按鈕接在下方
-  const segments: { items: Todo[]; workspace: TodoWorkspace | null }[] = [];
+  // List 只能放 ListItem，ListItem 整列又是按鈕：有專案（或舊版工作區）的項目切成獨立一段，按鈕接在下方
+  const segments: { items: Todo[]; link: Todo | null }[] = [];
   for (const todo of sortGroup(todos, status, now)) {
     const last = segments[segments.length - 1];
-    if (!todo.workspace && last && !last.workspace) {
+    if (!hasLink(todo) && last && !last.link) {
       last.items.push(todo);
     } else {
-      segments.push({ items: [todo], workspace: todo.workspace ?? null });
+      segments.push({ items: [todo], link: hasLink(todo) ? todo : null });
     }
   }
   return (
@@ -518,9 +605,9 @@ function Group({ status, todos, now }: { status: TodoStatus; todos: Todo[]; now:
                 );
               })}
             </List>
-            {segment.workspace ? (
+            {segment.link ? (
               <Row justify="end">
-                <WorkspaceButton workspace={segment.workspace} />
+                <TodoLink todo={segment.link} />
               </Row>
             ) : null}
           </Stack>
@@ -538,19 +625,22 @@ function MainView({ state }: { state: ViewState }) {
   const m = msgs();
   return (
     <Box height="100%" gap="sm">
+      {/* 新增改由底部的快速新增；重新整理放在狀態頁籤同一行 */}
       <Row justify="end" gap="xs">
-        <IconButton icon="add" label={m.addTodo} size="xs" variant="solid" tone="accent" disabled={disabled} onPress={() => openEditor()} />
-        <IconButton
-          icon="delete"
-          label={m.purge}
-          tooltip={m.purgeTooltip}
+        <Button size="xs" variant="outline" icon="bell" disabled={disabled} onPress={testNotify}>
+          {m.testNotify}
+        </Button>
+        <Button
           size="xs"
           variant="outline"
           tone="danger"
+          icon="delete"
+          tooltip={m.purgeTooltip}
           disabled={disabled || purgeable === 0}
           onPress={() => openPopup({ kind: 'purge' })}
-        />
-        <IconButton icon="refresh" label={m.refresh} size="xs" disabled={disabled} onPress={refresh} />
+        >
+          {m.purge}
+        </Button>
       </Row>
       <Box grow minHeight={0} scroll="y">
         <Stack gap="md">
@@ -559,17 +649,21 @@ function MainView({ state }: { state: ViewState }) {
           {state.todos.length === 0 ? (
             <EmptyState icon="check" title={m.emptyTitle} description={m.emptyDescription} />
           ) : null}
+          {/* 頁籤只當狀態切換、不放內容，右邊才放得下重新整理；清單接在下面 */}
+          <Row align="center" gap="xs">
+            <Box grow>
+              {state.todos.length > 0 ? (
+                <Tabs label={m.filterLabel} value={read(statusFilter)} onChange={(v) => set(statusFilter, v as TodoStatus)}>
+                  {STATUS_ORDER.map((status) => (
+                    <Tab value={status} label={m.tabLabel(m.status[status], state.todos.filter((t) => t.status === status).length)} />
+                  ))}
+                </Tabs>
+              ) : null}
+            </Box>
+            <IconButton icon="refresh" label={m.refresh} size="xs" disabled={disabled} onPress={refresh} />
+          </Row>
           {state.todos.length > 0 ? (
-            <Tabs label={m.filterLabel} value={read(statusFilter)} onChange={(v) => set(statusFilter, v as TodoStatus)}>
-              {STATUS_ORDER.map((status) => {
-                const todos = state.todos.filter((t) => t.status === status);
-                return (
-                  <Tab value={status} label={m.tabLabel(m.status[status], todos.length)}>
-                    <Group status={status} todos={todos} now={now} />
-                  </Tab>
-                );
-              })}
-            </Tabs>
+            <Group status={read(statusFilter)} todos={state.todos.filter((t) => t.status === read(statusFilter))} now={now} />
           ) : null}
         </Stack>
       </Box>
@@ -617,7 +711,8 @@ function DetailView({ todo }: { todo: Todo }) {
   const m = messages(lang);
   const footer = (
     <Stack gap="sm">
-      <Row justify="end" align="center" gap="sm" wrap>
+      {/* 三組：[刪除]、[完成／停用・啟用]、[編輯]；組間 lg、組內 xs，間距差得夠多才看得出分組 */}
+      <Row justify="end" align="center" gap="lg" wrap>
         <Button size="xs" variant="outline" tone="danger" icon="delete" disabled={disabled} onPress={askDelete}>
           {m.delete}
         </Button>
@@ -637,14 +732,9 @@ function DetailView({ todo }: { todo: Todo }) {
             </TintButton>
           )}
         </Row>
-        <Row align="center" gap="xs">
-          <Button size="xs" variant="outline" icon="bell" disabled={disabled} onPress={() => testNotify(todo.id)}>
-            {m.testNotify}
-          </Button>
-          <Button size="xs" variant="solid" tone="accent" icon="edit" disabled={disabled} onPress={() => openEditor(todo)}>
-            {m.edit}
-          </Button>
-        </Row>
+        <Button size="xs" variant="solid" tone="accent" icon="edit" disabled={disabled} onPress={() => openEditor(todo)}>
+          {m.edit}
+        </Button>
       </Row>
       {read(confirmDelete) ? <ConfirmDelete title={todo.title} onConfirm={() => removeTodo(todo.id)} /> : null}
       {read(confirmStatus) ? <ConfirmStatus todo={todo} status={read(confirmStatus)!} /> : null}
@@ -652,15 +742,16 @@ function DetailView({ todo }: { todo: Todo }) {
   );
   return (
     <PopupFrame title={m.detailTitle} footer={footer}>
-      <Heading level={1}>{todo.title}</Heading>
+      {/* Heading 最大只有 text-base；Markdown 的 h1 是 18px，是元件面板裡最大的字 */}
+      <Markdown key="detail-title" content={markdownHeading(todo.title)} />
       <Row gap="xs" wrap>
         <Badge tone={STATUS_TONE[todo.status]}>{m.status[todo.status]}</Badge>
         {live ? <Badge tone="warning">{m.badgeOngoing}</Badge> : null}
         {todo.notify && todo.startAt !== null ? <Badge tone="accent">{m.badgeNotify}</Badge> : null}
       </Row>
-      {todo.workspace ? (
+      {hasLink(todo) ? (
         <Row>
-          <WorkspaceButton workspace={todo.workspace} />
+          <TodoLink todo={todo} />
         </Row>
       ) : null}
       {live ? (
@@ -669,19 +760,22 @@ function DetailView({ todo }: { todo: Todo }) {
         </Callout>
       ) : null}
       <Section title={m.timeSection}>
-        <KeyValue
-          items={[
-            { label: m.startLabel, value: todo.startAt === null ? m.unscheduled : formatDateTime(todo.startAt) },
-            { label: m.durationLabel, value: todo.durationMin > 0 ? formatDuration(todo.durationMin, lang) : '—' },
-            { label: m.repeatLabel, value: describeRepeat(todo.repeat, lang) },
-            { label: m.nextLabel, value: at === null ? '—' : formatDateTime(at) },
-            { label: m.notifyLabel, value: todo.startAt === null ? m.notifyUnscheduled : todo.notify ? m.on : m.off },
-          ]}
-        />
+        <Box columns={2} gap="sm">
+          <KeyFact label={m.startLabel} value={todo.startAt === null ? m.unscheduled : formatDateTime(todo.startAt)} />
+          <KeyFact label={m.nextLabel} value={at === null ? '—' : formatDateTime(at)} />
+        </Box>
+        <Stack gap="xs">
+          <MinorFact label={m.durationLabel} value={todo.durationMin > 0 ? formatDuration(todo.durationMin, lang) : '—'} />
+          <MinorFact label={m.repeatLabel} value={describeRepeat(todo.repeat, lang)} />
+          <MinorFact label={m.notifyLabel} value={todo.startAt === null ? m.notifyUnscheduled : todo.notify ? m.on : m.off} />
+        </Stack>
       </Section>
-      <Section title={m.bodySection}>
-        {todo.body.trim() ? <Markdown content={todo.body} /> : <Text size="sm" muted>{m.noBody}</Text>}
-      </Section>
+      {/* 要做的事是內容頁的另一個重點：黃框，並跟上面的時間資訊多隔一點 */}
+      <Box paddingY="sm">
+        <Section title={m.bodySection} tone="warning">
+          {todo.body.trim() ? <Markdown content={todo.body} /> : <Text size="sm" muted>{m.noBody}</Text>}
+        </Section>
+      </Box>
     </PopupFrame>
   );
 }
@@ -695,12 +789,15 @@ function repeatOptions(m: Messages): { value: RepeatUnit | 'none'; label: string
 }
 
 /** 帶入的時間取下一個整分鐘：存檔當下以前的場次不會通知，取整後馬上存仍趕得上。 */
-function nextMinute(): string {
-  return formatDateTime(nextMinuteMs());
-}
-
 function nextMinuteMs(): number {
   return Math.ceil((Date.now() + 1) / 60_000) * 60_000;
+}
+
+/** 截止時間的預設：明天的同一個整分（用 setDate 換日，不直接加 24 小時） */
+function tomorrowMs(): number {
+  const d = new Date(nextMinuteMs());
+  d.setDate(d.getDate() + 1);
+  return d.getTime();
 }
 
 const pad2 = (n: number) => String(n).padStart(2, '0');
@@ -716,28 +813,31 @@ function minuteOptions(current: number | null): { value: string; label: string }
   return mins.map((mi) => ({ value: String(mi), label: pad2(mi) }));
 }
 
+/** 欄位空白或打錯時，日曆與「帶入」按鈕的基準時間：開始時間取下一個整分，截止時間取明天同一時間 */
+const PICKER_FALLBACK: Record<PickerField, () => number> = { start: nextMinuteMs, until: tomorrowMs };
+
 /**
- * 開始時間的日曆與時、分選單：按下就改寫 draft.start，欄位仍可手打，驗證照舊走 parseDraft。
- * 欄位空白或打錯時，選日期沿用「下一個整分鐘」的時間、選時分沿用今天。
+ * 日期時間欄位的日曆與時、分選單：按下就改寫 draft[field]，欄位仍可手打，驗證照舊走 parseDraft。
+ * 欄位空白或打錯時，選日期沿用 PICKER_FALLBACK 的時分、選時分沿用其日期。
  */
-function StartPicker({ ym, start }: { ym: YearMonth; start: string }) {
+function DateTimePicker({ field, ym, value }: { field: PickerField; ym: YearMonth; value: string }) {
   const m = msgs();
-  const picked = parseLocalDateTime(start);
-  const base = picked ?? nextMinuteMs();
+  const picked = parseLocalDateTime(value);
+  const base = picked ?? PICKER_FALLBACK[field]();
   const now = Date.now();
-  const setStart = (ms: number) => patchDraft({ start: formatDateTime(ms) });
+  const setValue = (ms: number) => patchDraft({ [field]: formatDateTime(ms) });
   const pickedHour = picked === null ? undefined : String(new Date(picked).getHours());
   const pickedMinute = picked === null ? null : new Date(picked).getMinutes();
   return (
     <Box border radius="md" padding="sm" gap="xs">
       <Row justify="between" align="center">
-        <Button size="xs" variant="ghost" onPress={() => set(startPicker, shiftMonth(ym, -1))}>
+        <Button size="xs" variant="ghost" onPress={() => set(dateTimePicker, { field, ym: shiftMonth(ym, -1) })}>
           {`‹ ${m.prevMonth}`}
         </Button>
         <Text size="sm" weight="medium">
           {m.monthTitle(ym.year, ym.month)}
         </Text>
-        <Button size="xs" variant="ghost" onPress={() => set(startPicker, shiftMonth(ym, 1))}>
+        <Button size="xs" variant="ghost" onPress={() => set(dateTimePicker, { field, ym: shiftMonth(ym, 1) })}>
           {`${m.nextMonth} ›`}
         </Button>
       </Row>
@@ -764,7 +864,7 @@ function StartPicker({ ym, start }: { ym: YearMonth; start: string }) {
                   size="xs"
                   variant={selected ? 'solid' : sameDay(now, ym, day) ? 'outline' : 'ghost'}
                   tone={selected ? 'accent' : 'neutral'}
-                  onPress={() => setStart(withDate(base, ym, day))}
+                  onPress={() => setValue(withDate(base, ym, day))}
                 >
                   {String(day)}
                 </Button>
@@ -779,17 +879,45 @@ function StartPicker({ ym, start }: { ym: YearMonth; start: string }) {
           value={pickedHour}
           placeholder="--"
           options={HOUR_OPTIONS}
-          onChange={(v) => setStart(withTime(base, Number(v), new Date(base).getMinutes()))}
+          onChange={(v) => setValue(withTime(base, Number(v), new Date(base).getMinutes()))}
         />
         <Select
           label={m.minuteLabel}
           value={pickedMinute === null ? undefined : String(pickedMinute)}
           placeholder="--"
           options={minuteOptions(pickedMinute)}
-          onChange={(v) => setStart(withTime(base, new Date(base).getHours(), Number(v)))}
+          onChange={(v) => setValue(withTime(base, new Date(base).getHours(), Number(v)))}
         />
       </Box>
     </Box>
+  );
+}
+
+/** 日期時間輸入框＋「帶入」與「選擇日期時間」按鈕＋展開的日曆 */
+function DateTimeField(props: { field: PickerField; label: string; value: string; placeholder: string; fillLabel: string }) {
+  const { field, value } = props;
+  const m = msgs();
+  const picker = read(dateTimePicker);
+  const open = picker?.field === field;
+  const fallback = PICKER_FALLBACK[field];
+  return (
+    <Stack gap="sm">
+      <Input label={props.label} value={value} placeholder={props.placeholder} onChange={(v) => patchDraft({ [field]: v })} />
+      <Actions>
+        <Button size="xs" variant="outline" icon="calendar" onPress={() => patchDraft({ [field]: formatDateTime(fallback()) })}>
+          {props.fillLabel}
+        </Button>
+        <Button
+          size="xs"
+          variant={open ? 'solid' : 'outline'}
+          icon={open ? 'collapse' : 'expand'}
+          onPress={() => set(dateTimePicker, open ? null : { field, ym: yearMonthOf(parseLocalDateTime(value) ?? fallback()) })}
+        >
+          {open ? m.pickerClose : m.pickerOpen}
+        </Button>
+      </Actions>
+      {open && picker ? <DateTimePicker field={field} ym={picker.ym} value={value} /> : null}
+    </Stack>
   );
 }
 
@@ -798,7 +926,6 @@ function EditView({ state }: { state: ViewState }) {
   const disabled = read(busy);
   const existing = d.id ? state.todos.find((t) => t.id === d.id) : undefined;
   const hasStart = d.start.trim().length > 0;
-  const picker = read(startPicker);
   const m = msgs();
   const footer = (
     <Stack gap="xs">
@@ -819,9 +946,11 @@ function EditView({ state }: { state: ViewState }) {
     </Stack>
   );
   return (
-    <PopupFrame title={existing ? m.editTitle : m.newTitle} footer={footer}>
+    // 標題列用已儲存的標題，打字中的草稿不跟著變，存檔後才更新
+    <PopupFrame title={existing ? existing.title : m.newTitle} footer={footer}>
       <Section title={m.basicSection}>
         <Input label={m.titleLabel} value={d.title} maxLength={TITLE_MAX} placeholder={m.titlePlaceholder} onChange={(v) => patchDraft({ title: v })} />
+        <ProjectField draftKey={d.projectKey} existing={existing ?? null} />
         <Row justify="end" gap="xs">
           <Button size="xs" variant={read(bodyTab) === 'write' ? 'outline' : 'ghost'} icon="edit" onPress={() => set(bodyTab, 'write')}>
             {m.bodyWrite}
@@ -840,28 +969,17 @@ function EditView({ state }: { state: ViewState }) {
             onChange={(v) => update(draft, (cur) => ({ ...cur, body: assistMarkdown(cur.body, v) }))}
           />
         ) : (
-          <Box border radius="md" padding="md" background="muted" minHeight={200}>
-            {d.body.trim() ? <Markdown content={d.body} /> : <Text size="sm" muted>{m.noBody}</Text>}
-          </Box>
+          // 預覽沒有 Textarea 自帶的 label，用 Field 補上同一個標題
+          <Field label={m.bodyLabel}>
+            <Box border radius="md" padding="md" background="muted" minHeight={200}>
+              {d.body.trim() ? <Markdown content={d.body} /> : <Text size="sm" muted>{m.noBody}</Text>}
+            </Box>
+          </Field>
         )}
       </Section>
 
       <Section title={m.timeSection}>
-        <Input label={m.startLabel} value={d.start} placeholder={m.startPlaceholder} onChange={(v) => patchDraft({ start: v })} />
-        <Actions>
-          <Button size="xs" variant="outline" icon="calendar" onPress={() => patchDraft({ start: nextMinute() })}>
-            {m.fillNow}
-          </Button>
-          <Button
-            size="xs"
-            variant={picker ? 'solid' : 'outline'}
-            icon={picker ? 'collapse' : 'expand'}
-            onPress={() => set(startPicker, picker ? null : yearMonthOf(parseLocalDateTime(d.start) ?? Date.now()))}
-          >
-            {picker ? m.pickerClose : m.pickerOpen}
-          </Button>
-        </Actions>
-        {picker ? <StartPicker ym={picker} start={d.start} /> : null}
+        <DateTimeField field="start" label={m.startLabel} value={d.start} placeholder={m.startPlaceholder} fillLabel={m.fillNow} />
         <Input label={m.durationInputLabel} value={d.duration} placeholder={m.durationPlaceholder} onChange={(v) => patchDraft({ duration: v })} />
         <Actions>
           {DURATION_PRESETS.map((minutes, i) => (
@@ -897,7 +1015,7 @@ function EditView({ state }: { state: ViewState }) {
               <Input label={m.countLabel} value={d.count} placeholder={m.countPlaceholder} onChange={(v) => patchDraft({ count: v })} />
             ) : null}
             {d.endKind === 'until' ? (
-              <Input label={m.untilLabel} value={d.until} placeholder="2026-12-31 23:59" onChange={(v) => patchDraft({ until: v })} />
+              <DateTimeField field="until" label={m.untilLabel} value={d.until} placeholder="2026-12-31 23:59" fillLabel={m.fillTomorrow} />
             ) : null}
           </Stack>
         ) : null}
@@ -919,23 +1037,33 @@ function EditView({ state }: { state: ViewState }) {
           onChange={(v) => patchDraft({ status: v as TodoStatus })}
         />
       </Section>
-
-      <Section title={m.workspaceSection}>
-        <WorkspaceField draftId={d.workspaceId} existing={existing?.workspace ?? null} />
-      </Section>
     </PopupFrame>
   );
 }
 
-/** Select 的選項值不能是空字串，「不指定」用這個代替 */
-const NO_WORKSPACE = 'none';
+/** 展開的專案清單最多這麼高，超過就在框內捲動 */
+const LIST_MAX_HEIGHT = 240;
 
-/** existing＝這筆存著的工作區：已不在清單上時仍列為選項，存檔不會被默默清掉 */
-function WorkspaceField({ draftId, existing }: { draftId: string; existing: TodoWorkspace | null }) {
+/** 以空白分詞、不分大小寫，每個詞都要出現在「群組 / 專案」裡；沒輸入就是全部 */
+function matchProjects(projects: ProjectOption[], query: string): ProjectOption[] {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  return projects.filter((p) => {
+    const text = `${p.group} / ${p.name}`.toLowerCase();
+    return words.every((w) => text.includes(w));
+  });
+}
+
+/**
+ * 一個輸入框兼搜尋與選擇（仿 select2）：Select 不能搜尋，元件目錄也沒有 Combobox。
+ * 沒在打字時，輸入框的 placeholder 顯示已選的專案；打字就篩選，按右邊展開鈕列出全部，點一筆選定。
+ * existing＝正在編輯的這筆：存著的專案已不在清單上時仍顯示得出名稱，存檔不會被默默清掉；
+ * 舊版只存了工作區、又對不到專案的，提示存檔後會清除。
+ */
+function ProjectField({ draftKey, existing }: { draftKey: string; existing: Todo | null }) {
   const m = msgs();
-  const opts = read(workspaceOpts);
+  const opts = read(projectOpts);
   if (!opts) {
-    return <Spinner label={m.workspaceLoading} />;
+    return <Spinner label={m.projectLoading} />;
   }
   if (!opts.available) {
     return (
@@ -944,28 +1072,116 @@ function WorkspaceField({ draftId, existing }: { draftId: string; existing: Todo
       </Text>
     );
   }
-  const options = [{ value: NO_WORKSPACE, label: m.workspaceNone }, ...opts.workspaces.map((w) => ({ value: w.id, label: m.workspaceOption(w.name, w.branch) }))];
-  if (existing && !opts.workspaces.some((w) => w.id === existing.id)) {
-    options.push({ value: existing.id, label: m.workspaceUnlisted(existing.name) });
-  }
-  const current = opts.currentId;
+  const selected = opts.projects.find((p) => p.key === draftKey);
+  const saved = existing?.project;
+  const selectedLabel = selected
+    ? m.projectOption(selected.group, selected.name, selected.kind, selected.worktrees.length)
+    : saved && saved.key === draftKey
+      ? m.projectUnlisted(saved.name)
+      : null;
+  const legacyLost = existing && !existing.project && existing.workspace && draftKey === '' ? existing.workspace : null;
+  const current = opts.currentKey;
+  const query = read(projectQuery);
+  const searching = query.trim() !== '';
+  const open = searching || read(projectBrowse);
+  const shown = matchProjects(opts.projects, query);
+  const pick = (key: string) => {
+    patchDraft({ projectKey: key });
+    set(projectQuery, '');
+    set(projectBrowse, false);
+  };
+  const toggle = () => {
+    set(projectQuery, '');
+    set(projectBrowse, !open);
+  };
   return (
     <Stack gap="sm">
-      <Select
-        label={m.workspaceLabel}
-        value={draftId || NO_WORKSPACE}
-        options={options}
-        onChange={(v) => patchDraft({ workspaceId: v === NO_WORKSPACE ? '' : v })}
-      />
+      <Row align="end" gap="xs">
+        <Box grow>
+          <Input
+            label={m.projectLabel}
+            type="search"
+            value={query}
+            placeholder={selectedLabel ?? m.projectSearchPlaceholder}
+            onChange={(v) => set(projectQuery, v)}
+            onSubmit={() => searching && shown[0] && pick(shown[0].key)}
+          />
+        </Box>
+        {draftKey ? <IconButton icon="close" label={m.projectClear} size="xs" onPress={() => pick('')} /> : null}
+        <IconButton icon={open ? 'collapse' : 'expand'} label={open ? m.projectCollapse : m.projectExpand} size="xs" onPress={toggle} />
+      </Row>
+      {open ? (
+        shown.length === 0 ? (
+          <Text size="xs" muted>
+            {m.projectSearchNone}
+          </Text>
+        ) : (
+          <Box border="accent" radius="sm" padding="xs" maxHeight={LIST_MAX_HEIGHT} scroll="y">
+            <List label={m.projectSearchResults}>
+              {shown.map((p) => (
+                <ListItem
+                  title={p.name}
+                  description={m.projectSearchHit(p.group, p.kind, p.worktrees.length)}
+                  icon={p.kind === 'folder' ? 'folder' : 'branch'}
+                  current={p.key === draftKey}
+                  onPress={() => pick(p.key)}
+                />
+              ))}
+            </List>
+          </Box>
+        )
+      ) : null}
+      {/* 說明收進 ⓘ 的 tooltip；按鈕停用時另以自己的 tooltip 說明認不出目前專案 */}
       <Actions>
-        <Button size="xs" variant="outline" icon="branch" disabled={!current} onPress={() => current && patchDraft({ workspaceId: current })}>
-          {m.workspaceUseCurrent}
+        <IconButton icon="info" label={m.projectHelp} tooltip={m.projectHint} size="xs" variant="ghost" />
+        <Button
+          size="xs"
+          variant="outline"
+          icon="branch"
+          tooltip={current ? undefined : m.projectNoCurrent}
+          disabled={!current}
+          onPress={() => current && pick(current)}
+        >
+          {m.projectUseCurrent}
         </Button>
       </Actions>
-      <Text size="xs" muted>
-        {current ? m.workspaceHint : m.workspaceNoCurrent}
-      </Text>
+      {legacyLost ? (
+        <Text size="xs" tone="warning">
+          {m.projectLegacyLost(legacyLost.name)}
+        </Text>
+      ) : null}
     </Stack>
+  );
+}
+
+// ── popup：挑工作樹 ───────────────────────────────────────
+
+function PickView({ pick }: { pick: Extract<Popup, { kind: 'pick' }> }) {
+  const m = msgs();
+  const back = () => (pick.back ? openPopup(pick.back) : closePopup());
+  const choose = async (id: string) => {
+    await openWorkspace(id);
+    back();
+  };
+  return (
+    <PopupFrame title={m.pickTitle(pick.project.name)} onBack={back}>
+      {pick.worktrees.length === 0 ? (
+        <Text size="sm" muted>
+          {m.projectGone}
+        </Text>
+      ) : (
+        <List label={m.pickListLabel}>
+          {pick.worktrees.map((w) => (
+            <ListItem
+              title={w.name}
+              description={w.branch ?? m.worktreeFolder}
+              icon={w.kind === 'folder' ? 'folder' : 'branch'}
+              onPress={() => choose(w.id)}
+            />
+          ))}
+        </List>
+      )}
+    </PopupFrame>
   );
 }
 
@@ -1050,6 +1266,9 @@ export default function Panel() {
   }
   if (open?.kind === 'purge') {
     return <PurgeView state={state} />;
+  }
+  if (open?.kind === 'pick') {
+    return <PickView pick={open} />;
   }
   if (open?.kind === 'detail') {
     const todo = state.todos.find((t) => t.id === open.id);
