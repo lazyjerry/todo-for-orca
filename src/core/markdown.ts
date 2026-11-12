@@ -55,3 +55,10 @@ export function assistMarkdown(prev: string, next: string): string {
   const listed = continueList(prev, next);
   return listed !== next ? listed : completeTask(prev, next);
 }
+
+const ASCII_PUNCT = /[!-\/:-@[-`{-~]/g;
+
+/** 純文字標題轉成 Markdown 的 h1；ASCII 標點全部跳脫，標題裡的 *、[、# 等不會被當成語法。 */
+export function markdownHeading(title: string): string {
+  return '# ' + title.replace(ASCII_PUNCT, '\\$&');
+}

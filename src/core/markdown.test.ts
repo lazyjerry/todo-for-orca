@@ -1,5 +1,5 @@
 import { assert, test } from 'orca/testing';
-import { assistMarkdown, continueList } from './markdown.ts';
+import { assistMarkdown, continueList, markdownHeading } from './markdown.ts';
 
 const enter = (text: string, at = text.length) => continueList(text, text.slice(0, at) + '\n' + text.slice(at));
 
@@ -52,4 +52,10 @@ test('[ 不在列表符號後、或後面已有 ] 時不補', () => {
 
 test('assistMarkdown 仍會延續列表', () => {
   assert.equal(typeAt('- [ ] a', '\n'), '- [ ] a\n- [ ] ');
+});
+
+test('標題轉 h1：ASCII 標點跳脫，中文與空白不動', () => {
+  assert.equal(markdownHeading('考勤研究'), '# 考勤研究');
+  assert.equal(markdownHeading('修 *bug* #12 [急]'), '# 修 \\*bug\\* \\#12 \\[急\\]');
+  assert.equal(markdownHeading('a_b `c` <d> & e\\f'), '# a\\_b \\`c\\` \\<d\\> \\& e\\\\f');
 });
